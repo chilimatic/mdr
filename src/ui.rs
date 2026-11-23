@@ -79,7 +79,7 @@ fn draw_doc(f: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::from(overlay(&line.spans, &ranges)));
     }
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines).scroll((0, app.hscroll.min(u16::MAX as usize) as u16)), area);
 }
 
 fn draw_images(f: &mut Frame, app: &mut App, area: Rect) {
@@ -93,6 +93,8 @@ fn draw_images(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|img| (img.path.clone(), img.line, img.x, img.cols, img.rows))
         .collect();
     for (path, line, x, cols, rows) in visible {
+        // Images are not cut sideways: skip one whose left edge is scrolled out of view.
+        let Some(x) = (x as usize).checked_sub(app.hscroll) else { continue };
         if let Some(proto) = app.images.protocol(&path, cols, rows) {
             let pos = SignedPosition { x: x as i16, y: (line as i64 - top) as i16 };
             f.render_widget(SlicedImage::new(proto, pos), area);
@@ -119,6 +121,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let mut right = Vec::new();
     if app.watcher.is_some() {
         right.push(Span::styled(" ● watch ", theme.status_accent));
+    }
+    if app.max_hscroll() > 0 {
+        right.push(Span::styled(format!(" ⇆ col {} ", app.hscroll + 1), theme.status));
     }
     right.push(Span::styled(
         format!(" {}  {}/{}  {pct:>3}% ", app.theme.kind.name(), (app.scroll + 1).min(total.max(1)), total),
@@ -197,6 +202,7 @@ const HELP: &[(&str, &str)] = &[
     ("d/u", "half page"),
     ("space/b", "page down/up"),
     ("g/G", "top/bottom"),
+    ("h/l ←/→", "scroll sideways"),
     ("]/[", "next/prev heading"),
     ("t", "table of contents"),
     ("/", "search"),
@@ -330,6 +336,53 @@ mod tests {
                 println!("{}", l.plain.trim_end());
             }
         }
+    }
+
+    #[test]
+    fn wide_diagram_scrolls_sideways() {
+        let label = "a long node label";
+        let md = format!("```mermaid\ngraph LR\nA[{label} 1] --> B[{label} 2] --> C[{label} 3] --> D[{label} 4]\n```\n");
+        let mut app = App::new(None, md, ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("scroll with h / l")), "{s:#?}");
+        assert!(s.iter().any(|l| l.contains("long node label 1")));
+        assert!(s.last().unwrap().contains("⇆ col 1"));
+        assert!(app.max_hscroll() > 0);
+
+        for _ in 0..20 {
+            key(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(app.hscroll, app.max_hscroll());
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("long node label 4")), "{s:#?}");
+        assert!(!s.iter().any(|l| l.contains("long node label 1")));
+
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.hscroll, app.max_hscroll() - 8);
+
+        // Search moves the view sideways to the match.
+        key(&mut app, KeyCode::Char('/'));
+        for c in "label 1".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("label 1")), "{s:#?}");
+    }
+
+    #[test]
+    fn narrow_document_does_not_scroll_sideways() {
+        let mut app = App::new(None, "just text".into(), ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.hscroll, 0);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(!screen(&term).last().unwrap().contains('⇆'));
     }
 
     #[test]

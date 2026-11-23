@@ -33,6 +33,8 @@ pub struct App {
     pub text: String,
     pub doc: Doc,
     pub scroll: usize,
+    /// Columns scrolled to the right.
+    pub hscroll: usize,
     pub view_height: usize,
     pub term_width: u16,
     pub theme: Theme,
@@ -64,6 +66,7 @@ impl App {
             text,
             doc: Doc::default(),
             scroll: 0,
+            hscroll: 0,
             view_height: 0,
             term_width: 0,
             theme: Theme::new(theme),
@@ -97,6 +100,26 @@ impl App {
 
     pub fn max_scroll(&self) -> usize {
         self.doc.lines.len().saturating_sub(self.view_height.max(1))
+    }
+
+    pub fn max_hscroll(&self) -> usize {
+        self.doc.width.saturating_sub(self.content_width() as usize)
+    }
+
+    fn scroll_x(&mut self, delta: isize) {
+        let x = self.hscroll as isize + delta;
+        self.hscroll = (x.max(0) as usize).min(self.max_hscroll());
+    }
+
+    /// Scrolls sideways so the char range `[start, end)` of `line` is visible.
+    fn reveal_cols(&mut self, line: usize, start: usize, end: usize) {
+        let Some(l) = self.doc.lines.get(line) else { return };
+        let col = |n: usize| -> usize { l.plain.chars().take(n).map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum() };
+        let (a, b) = (col(start), col(end));
+        let w = self.content_width() as usize;
+        if a < self.hscroll || b > self.hscroll + w {
+            self.hscroll = a.saturating_sub(w / 3).min(self.max_hscroll());
+        }
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
@@ -153,6 +176,7 @@ impl App {
             self.scroll = self.doc.lines.iter().position(|l| l.src >= src).unwrap_or(self.scroll);
         }
         self.scroll = self.scroll.min(self.max_scroll());
+        self.hscroll = self.hscroll.min(self.max_hscroll());
     }
 
     /// Called on every draw: lays out again if the terminal width changed.
@@ -164,6 +188,7 @@ impl App {
             self.relayout();
         }
         self.scroll = self.scroll.min(self.max_scroll());
+        self.hscroll = self.hscroll.min(self.max_hscroll());
     }
 
     /// Reads the file again. Keeps the reader at the same heading if it still exists.
@@ -193,6 +218,7 @@ impl App {
             self.scroll = h.line + offset;
         }
         self.scroll = self.scroll.min(self.max_scroll());
+        self.hscroll = self.hscroll.min(self.max_hscroll());
         self.set_message("reloaded");
     }
 
@@ -318,7 +344,10 @@ impl App {
         };
         let piece = firsts[next];
         self.link_selected = Some(piece);
-        self.reveal(self.doc.links[piece].line);
+        let l = &self.doc.links[piece];
+        let (line, start, end) = (l.line, l.start, l.end);
+        self.reveal(line);
+        self.reveal_cols(line, start, end);
     }
 
     fn open_selected_link(&mut self) {
@@ -390,6 +419,7 @@ impl App {
     fn reveal_match(&mut self) {
         if let Some(m) = self.search.as_ref().and_then(|s| s.matches.get(s.current)).copied() {
             self.reveal(m.line);
+            self.reveal_cols(m.line, m.start, m.end);
         }
     }
 
@@ -483,6 +513,8 @@ impl App {
             KeyCode::Char('f') if ctrl => self.scroll_by(page),
             KeyCode::Char('b') if ctrl => self.scroll_by(-page),
             KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
+            KeyCode::Char('h') | KeyCode::Left => self.scroll_x(-8),
+            KeyCode::Char('l') | KeyCode::Right => self.scroll_x(8),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
             KeyCode::Char('d') => self.scroll_by(half),
             KeyCode::Char('u') => self.scroll_by(-half),

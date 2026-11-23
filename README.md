@@ -77,6 +77,7 @@ a pipe or a file.
 | `d` `u` / `Ctrl-d` `Ctrl-u` | Scroll half a page |
 | `Space` `f` `PgDn` / `b` `PgUp` | Scroll one page (`Ctrl-f` / `Ctrl-b` also work) |
 | `g` `Home` / `G` `End` | Go to the top / bottom |
+| `h` `l` / `←` `→` | Scroll sideways (only when the document is wider than the window) |
 | `]` / `[` | Next / previous heading |
 | `t` | Table of contents (`j`/`k` to move, `Enter` to jump, `Esc` to close) |
 | `/` | Search. Type the text and press `Enter`. |
@@ -112,10 +113,15 @@ Flowcharts support node shapes, edge labels (`-->|yes|` and `-- yes -->`), dotte
 Sequence diagrams support `participant` / `actor` with `as`, solid and dashed arrows,
 messages to self, `autonumber`, notes, and `loop` / `alt` / `opt` / `par` sections.
 
+A graph or sequence diagram that is wider than the window is still drawn. A line above it
+says so, and you scroll sideways with `h` and `l`. The status bar then shows the current
+column. Search and link selection also scroll sideways to show the match or link. Charts
+always fit the window, and wide tables wrap the text in their cells.
+
 If mdr cannot draw a diagram, it shows a warning line and then the source as a normal
 code block. This happens when:
 
-- the diagram is wider than the text width (press `+` to make the text wider),
+- the diagram is wider than 400 columns,
 - the Mermaid diagram type is not supported (for example `gantt`, `classDiagram`, `erDiagram`),
 - the source has a syntax error,
 - the diagram is very large (more than 300 nodes, 1000 edges or 1000 messages).

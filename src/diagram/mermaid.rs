@@ -27,13 +27,13 @@ pub fn render(src: &str, width: usize, pal: &Palette) -> Result<Lines, String> {
     match kind {
         "graph" | "flowchart" => {
             let g = parse_flowchart(header, body)?;
-            graph::render(&g, width, pal).map(|c| c.lines())
+            graph::render(&g, super::MAX_DIAGRAM_WIDTH, pal).map(|c| c.lines())
         }
         "stateDiagram" | "stateDiagram-v2" => {
             let g = parse_state(body)?;
-            graph::render(&g, width, pal).map(|c| c.lines())
+            graph::render(&g, super::MAX_DIAGRAM_WIDTH, pal).map(|c| c.lines())
         }
-        "sequenceDiagram" => sequence::render(&sequence::parse(body)?, width, pal),
+        "sequenceDiagram" => sequence::render(&sequence::parse(body)?, super::MAX_DIAGRAM_WIDTH, pal),
         "pie" => chart::render(&parse_pie(header, body)?, width, pal),
         "xychart-beta" | "xychart" => chart::render(&parse_xychart(header, body)?, width, pal),
         other => Err(format!("mermaid \"{other}\" diagrams are not supported")),

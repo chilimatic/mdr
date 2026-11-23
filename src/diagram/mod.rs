@@ -11,6 +11,10 @@ use ratatui::style::{Modifier, Style};
 
 use crate::theme::Theme;
 
+/// Graphs and sequence diagrams wider than the window are drawn anyway (the
+/// viewer scrolls sideways), up to this many columns.
+pub const MAX_DIAGRAM_WIDTH: usize = 400;
+
 /// Rendered rows of (text, style) pieces.
 pub type Lines = Vec<Vec<(String, Style)>>;
 
@@ -50,12 +54,13 @@ pub fn is_diagram(lang: &str) -> bool {
     matches!(lang.to_ascii_lowercase().as_str(), "mermaid" | "dot" | "graphviz" | "chart")
 }
 
-/// Draws the diagram into at most `width` columns. `Err` explains why it cannot be drawn.
+/// Draws the diagram. Charts fit into `width` columns; graphs and sequence diagrams
+/// may be up to `MAX_DIAGRAM_WIDTH` wide. `Err` explains why it cannot be drawn.
 pub fn render(lang: &str, src: &str, width: usize, theme: &Theme) -> Result<Lines, String> {
     let pal = Palette::new(theme);
     match lang.to_ascii_lowercase().as_str() {
         "mermaid" => mermaid::render(src, width, &pal),
-        "dot" | "graphviz" => graph::render(&dot::parse(src)?, width, &pal).map(|c| c.lines()),
+        "dot" | "graphviz" => graph::render(&dot::parse(src)?, MAX_DIAGRAM_WIDTH, &pal).map(|c| c.lines()),
         "chart" => chart::render(&chart::parse_block(src)?, width, &pal),
         other => Err(format!("unknown diagram language {other}")),
     }
@@ -115,10 +120,22 @@ mod tests {
     }
 
     #[test]
-    fn too_wide_is_an_error() {
-        let theme = Theme::new(ThemeKind::Dark);
+    fn wide_graph_renders_beyond_window_width() {
         let src = "graph LR\nA[a very long label here] --> B[another very long label] --> C[and a third long one]";
-        assert!(render("mermaid", src, 30, &theme).is_err());
+        let out = draw("mermaid", src, 30);
+        use unicode_width::UnicodeWidthStr;
+        assert!(out.iter().any(|l| l.width() > 30));
+    }
+
+    #[test]
+    fn graph_over_max_width_is_an_error() {
+        let theme = Theme::new(ThemeKind::Dark);
+        let label = "x".repeat(60);
+        let src: String = std::iter::once("graph LR".to_string())
+            .chain((0..10).map(|i| format!("N{i}[{label}] --> N{}[{label}]", i + 1)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(render("mermaid", &src, 80, &theme).is_err());
     }
 
     #[test]

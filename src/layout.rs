@@ -56,6 +56,8 @@ pub struct Doc {
     pub headings: Vec<Heading>,
     pub links: Vec<Link>,
     pub images: Vec<ImageBlock>,
+    /// Width of the widest line. Can be more than the layout width (wide diagrams).
+    pub width: usize,
 }
 
 /// Gives the cell size of a local image, fitted into `max_cols`. `None` means "do not show it".
@@ -96,6 +98,7 @@ pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
         b.event(event, range.start);
     }
     b.flush_inline();
+    b.doc.width = b.doc.lines.iter().map(|l| l.plain.width()).max().unwrap_or(0);
     b.doc
 }
 
@@ -831,6 +834,12 @@ impl<'a> Builder<'a> {
         if crate::diagram::is_diagram(lang) {
             match crate::diagram::render(lang, body, self.avail(), self.ctx.theme) {
                 Ok(rows) => {
+                    let widest = rows.iter().map(|r| r.iter().map(|(t, _)| t.width()).sum::<usize>()).max().unwrap_or(0);
+                    if widest > self.avail() {
+                        let mut spans = self.take_prefix();
+                        spans.push(Span::styled("↔ wider than the window: scroll with h / l", self.theme().dim));
+                        self.push_line(spans);
+                    }
                     for row in rows {
                         let mut spans = self.take_prefix();
                         spans.extend(row.into_iter().map(|(t, st)| Span::styled(t, st)));
