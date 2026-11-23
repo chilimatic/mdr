@@ -333,6 +333,17 @@ mod tests {
     }
 
     #[test]
+    fn readme_renders_cleanly() {
+        let mut app = app_for("README.md");
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(!app.doc.lines.iter().any(|l| l.plain.contains('⚠')));
+        // Escaped pipes in table cells render as plain pipes.
+        assert!(app.doc.lines.iter().any(|l| l.plain.contains("--theme auto|dark|light")));
+        assert!(app.doc.headings.iter().any(|h| h.slug == "diagrams"));
+    }
+
+    #[test]
     fn link_selection_survives_relayout() {
         let mut app = app_for("tests/fixtures/kitchen-sink.md");
         let mut term = Terminal::new(TestBackend::new(70, 30)).unwrap();
