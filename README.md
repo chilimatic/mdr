@@ -54,6 +54,8 @@ mdr [OPTIONS] [FILE]
 | `--width N` | Maximum text width in columns. |
 | `-w`, `--watch` | Reload when the file changes. Needs a file, not stdin. |
 | `--no-images` | Do not show images inline. |
+| `-p`, `--print` | Print the rendered document and exit, like `cat`. |
+| `--color auto\|always\|never` | Colors in printed output. Default: `auto`. |
 
 Examples:
 
@@ -66,8 +68,23 @@ curl -s https://example.com/README.md | mdr
 When mdr reads from stdin, relative image paths are resolved from the current directory,
 and images are drawn with block characters.
 
-mdr needs an interactive terminal. It does not print plain text when its output goes to
-a pipe or a file.
+### Printed output
+
+When stdout is not a terminal, or with `--print`, mdr does not open the viewer. It prints
+the rendered document and exits:
+
+```sh
+mdr notes.md > notes.txt               # plain text
+mdr notes.md | grep -n TODO            # plain text
+mdr --color always notes.md | less -R  # keep the colors
+mdr --print notes.md                   # print to the terminal, with colors
+```
+
+- Colors: with `--color auto`, mdr uses colors only when it prints to a terminal and the
+  `NO_COLOR` environment variable is not set.
+- Width: `--width` if you give it, otherwise the terminal width (at most 100), otherwise 80.
+- Images print as their alt text. Diagrams print as text art, at full width.
+- `--watch` does not work in this mode.
 
 ## Keys
 

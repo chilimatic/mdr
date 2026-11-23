@@ -160,6 +160,7 @@ impl App {
                 hl: &self.hl,
                 base_dir: base_dir.as_deref(),
                 sizer: &mut self.images,
+                interactive: true,
             },
         );
         self.layout_width = width;

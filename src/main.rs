@@ -3,6 +3,7 @@ mod diagram;
 mod highlight;
 mod images;
 mod layout;
+mod print;
 mod search;
 mod theme;
 mod ui;
@@ -17,7 +18,14 @@ use ratatui_image::picker::{Capability, Picker};
 
 use app::App;
 use images::Images;
-use theme::{ThemeChoice, ThemeKind};
+use theme::{Theme, ThemeChoice, ThemeKind};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
 
 /// Interactive terminal markdown viewer.
 #[derive(Parser)]
@@ -41,6 +49,14 @@ struct Args {
     /// Do not show images inline.
     #[arg(long)]
     no_images: bool,
+
+    /// Print the rendered document and exit, like cat. This is automatic when stdout is not a terminal.
+    #[arg(short, long)]
+    print: bool,
+
+    /// Colors in printed output. `auto` uses colors only when stdout is a terminal and NO_COLOR is not set.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 }
 
 fn main() -> Result<()> {
@@ -59,8 +75,12 @@ fn main() -> Result<()> {
         let text = std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         (Some(path), text)
     };
-    if !std::io::stdout().is_terminal() {
-        bail!("stdout is not a terminal; mdr is an interactive viewer");
+    let stdout_tty = std::io::stdout().is_terminal();
+    if args.print || !stdout_tty {
+        if args.watch {
+            bail!("--watch only works in the interactive viewer, not with --print or piped output");
+        }
+        return print_doc(&args, path.as_deref(), &text, stdout_tty);
     }
     if args.watch && path.is_none() {
         bail!("--watch needs a file, not stdin");
@@ -70,6 +90,25 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, args, path, text, from_stdin);
     ratatui::restore();
     result
+}
+
+fn print_doc(args: &Args, path: Option<&std::path::Path>, text: &str, stdout_tty: bool) -> Result<()> {
+    let color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => stdout_tty && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+    };
+    // Width: --width, else the terminal width (it is known even when piped into less), else 80.
+    let width = match args.width {
+        Some(w) => w as usize,
+        None => ratatui::crossterm::terminal::size()
+            .map(|(w, _)| (w as usize).min(app::DEFAULT_MAX_WIDTH as usize))
+            .unwrap_or(80),
+    }
+    .max(20);
+    let theme = Theme::new(ThemeKind::detect(args.theme, None));
+    let doc = print::render(text, path, &theme, width);
+    print::write(&doc, color, &mut std::io::BufWriter::new(std::io::stdout().lock()))
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, args: Args, path: Option<PathBuf>, text: String, from_stdin: bool) -> Result<()> {

@@ -81,6 +81,8 @@ pub struct Ctx<'a> {
     pub hl: &'a Highlighter,
     pub base_dir: Option<&'a Path>,
     pub sizer: &'a mut dyn ImageSizer,
+    /// Interactive viewer (true) or printed output (false). Only the viewer can scroll sideways.
+    pub interactive: bool,
 }
 
 pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
@@ -835,7 +837,7 @@ impl<'a> Builder<'a> {
             match crate::diagram::render(lang, body, self.avail(), self.ctx.theme) {
                 Ok(rows) => {
                     let widest = rows.iter().map(|r| r.iter().map(|(t, _)| t.width()).sum::<usize>()).max().unwrap_or(0);
-                    if widest > self.avail() {
+                    if widest > self.avail() && self.ctx.interactive {
                         let mut spans = self.take_prefix();
                         spans.push(Span::styled("↔ wider than the window: scroll with h / l", self.theme().dim));
                         self.push_line(spans);
@@ -1008,7 +1010,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer });
+        let doc = render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         doc.lines.into_iter().map(|l| l.plain.trim_end().to_string()).collect()
     }
 
@@ -1095,7 +1097,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("see [here](https://x.y) ok", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer });
+        let doc = render("see [here](https://x.y) ok", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         assert_eq!(doc.links.len(), 1);
         let l = &doc.links[0];
         let text: String = doc.lines[l.line].plain.chars().skip(l.start).take(l.end - l.start).collect();
@@ -1108,7 +1110,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("aa [bb cc dd](u) [ee](v)", Ctx { width: 8, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer });
+        let doc = render("aa [bb cc dd](u) [ee](v)", Ctx { width: 8, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         let ids: Vec<usize> = doc.links.iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![0, 0, 1]);
     }
@@ -1124,7 +1126,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("[![b](https://img/x.svg)](https://target)", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer });
+        let doc = render("[![b](https://img/x.svg)](https://target)", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         assert_eq!(doc.links.len(), 1);
         assert_eq!(doc.links[0].url, "https://target");
     }
@@ -1139,7 +1141,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("# Intro\n# Intro\n# Intro", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer });
+        let doc = render("# Intro\n# Intro\n# Intro", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         let slugs: Vec<&str> = doc.headings.iter().map(|h| h.slug.as_str()).collect();
         assert_eq!(slugs, vec!["intro", "intro-1", "intro-2"]);
     }
