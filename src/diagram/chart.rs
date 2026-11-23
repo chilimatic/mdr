@@ -45,7 +45,8 @@ pub fn parse_block(src: &str) -> Result<Chart, String> {
     let mut chart = Chart { kind: Kind::Bar, title: None, labels: Vec::new(), series: Vec::new(), percent: false };
     let mut names: Vec<String> = Vec::new();
     for raw in src.lines() {
-        let line = raw.trim();
+        // A ` #` starts a comment. A `#` inside a word (like `C#`) does not.
+        let line = raw.find(" #").map_or(raw, |i| &raw[..i]).trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
             continue;
         }
@@ -392,6 +393,25 @@ mod tests {
         assert_eq!(c.series.len(), 2);
         assert_eq!(c.series[1].values, vec![2.0, 4.0]);
         assert_eq!(c.series[0].name.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn readme_chart_example_parses() {
+        let readme = std::fs::read_to_string("README.md").unwrap();
+        let start = readme.find("```chart\n").expect("chart example in README") + 9;
+        let end = start + readme[start..].find("\n```").unwrap();
+        let c = parse_block(&readme[start..end]).unwrap();
+        assert_eq!(c.kind, Kind::Line);
+        assert_eq!(c.series.len(), 2);
+        assert_eq!(c.labels[0], "08:00");
+        assert_eq!(c.title.as_deref(), Some("Latency (ms)"));
+    }
+
+    #[test]
+    fn inline_comments_and_hash_in_labels() {
+        let c = parse_block("type: column  # comment\nC#: 3").unwrap();
+        assert_eq!(c.kind, Kind::Column);
+        assert_eq!(c.labels, vec!["C#"]);
     }
 
     #[test]
