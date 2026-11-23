@@ -49,7 +49,7 @@ mdr [OPTIONS] [FILE]
 
 | Option | Meaning |
 |---|---|
-| `FILE` | Markdown file to show. Use `-` or leave it out to read from stdin. |
+| `FILE` | Markdown file to show, or a folder to pick a file from. Use `-` or leave it out to read from stdin. |
 | `--theme auto\|dark\|light` | Color theme. Default: `auto`. |
 | `--width N` | Maximum text width in columns. |
 | `-w`, `--watch` | Reload when the file changes. Needs a file, not stdin. |
@@ -68,6 +68,23 @@ curl -s https://example.com/README.md | mdr
 When mdr reads from stdin, relative image paths are resolved from the current directory,
 and images are drawn with block characters.
 
+### Folders
+
+`mdr docs/` shows a list of the markdown files (`.md`, `.markdown`) in the folder and its
+subfolders. Hidden folders, `target/` and `node_modules/` are skipped. The search goes at
+most 8 levels deep and lists at most 5000 files.
+
+| Key | Action |
+|---|---|
+| `j` `k` / `↓` `↑` | Move the selection |
+| `g` `G` / `Space` `b` | First / last / page down / page up |
+| `/` | Filter. Every word you type must appear in the path; case is ignored. `Enter` keeps the filter, `Esc` clears it. |
+| `Enter` / `o` / `l` / `→` | Open the file |
+| `q` | Quit |
+
+In an open file, `Backspace` goes back through the files you reached with links, and then
+to the list. With `--watch`, each file you open from the list is watched.
+
 ### Printed output
 
 When stdout is not a terminal, or with `--print`, mdr does not open the viewer. It prints
@@ -84,7 +101,7 @@ mdr --print notes.md                   # print to the terminal, with colors
   `NO_COLOR` environment variable is not set.
 - Width: `--width` if you give it, otherwise the terminal width (at most 100), otherwise 80.
 - Images print as their alt text. Diagrams print as text art, at full width.
-- `--watch` does not work in this mode.
+- `--watch` does not work in this mode, and you cannot print a folder.
 
 ## Keys
 
@@ -101,7 +118,7 @@ mdr --print notes.md                   # print to the terminal, with colors
 | `n` / `N` | Next / previous match |
 | `Tab` / `Shift-Tab` | Select the next / previous link |
 | `Enter` / `o` | Open the selected link |
-| `Backspace` | Go back to the previous file |
+| `Backspace` | Go back to the previous file, or to the file list |
 | `T` | Switch between dark and light theme |
 | `+` / `-` / `0` | Wider / narrower text / default width |
 | `w` | Turn watch mode on or off |

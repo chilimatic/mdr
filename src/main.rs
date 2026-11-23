@@ -3,6 +3,7 @@ mod diagram;
 mod highlight;
 mod images;
 mod layout;
+mod picker;
 mod print;
 mod search;
 mod theme;
@@ -31,7 +32,7 @@ enum ColorChoice {
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Markdown file to show. Use `-` or leave empty to read from stdin.
+    /// Markdown file to show, or a folder to pick a file from. Use `-` or leave empty to read from stdin.
     file: Option<PathBuf>,
 
     /// Color theme.
@@ -62,6 +63,10 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    if let Some(dir) = args.file.clone().filter(|p| p.is_dir()) {
+        return run_folder(args, dir);
+    }
+
     let from_stdin = args.file.as_ref().is_none_or(|p| p.as_os_str() == "-");
     let (path, text) = if from_stdin {
         if std::io::stdin().is_terminal() {
@@ -87,7 +92,21 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, args, path, text, from_stdin);
+    let result = run(&mut terminal, args, path, text, from_stdin, None);
+    ratatui::restore();
+    result
+}
+
+fn run_folder(args: Args, dir: PathBuf) -> Result<()> {
+    if args.print || !std::io::stdout().is_terminal() {
+        bail!("{} is a folder; printing needs a file", dir.display());
+    }
+    let picker = picker::Picker::scan(&dir).with_context(|| format!("cannot read {}", dir.display()))?;
+    if picker.files.is_empty() {
+        bail!("no markdown files in {}", dir.display());
+    }
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, args, None, String::new(), false, Some(picker));
     ratatui::restore();
     result
 }
@@ -111,7 +130,14 @@ fn print_doc(args: &Args, path: Option<&std::path::Path>, text: &str, stdout_tty
     print::write(&doc, color, &mut std::io::BufWriter::new(std::io::stdout().lock()))
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, args: Args, path: Option<PathBuf>, text: String, from_stdin: bool) -> Result<()> {
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    args: Args,
+    path: Option<PathBuf>,
+    text: String,
+    from_stdin: bool,
+    folder: Option<picker::Picker>,
+) -> Result<()> {
     // The terminal query answers on stdin. Skip it when stdin is a pipe.
     let picker = if from_stdin { None } else { Picker::from_query_stdio().ok() };
     let terminal_bg = picker.as_ref().and_then(|p| {
@@ -129,7 +155,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, args: Args, path: Option<PathBuf
     };
 
     let mut app = App::new(path, text, theme, args.width, Images::new(image_picker));
-    if args.watch {
+    if let Some(pk) = folder {
+        app.start_picker(pk, args.watch);
+    } else if args.watch {
         app.toggle_watch();
     }
     app.run(terminal)

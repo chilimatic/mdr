@@ -56,3 +56,10 @@ fn watch_with_print_is_an_error() {
     assert!(!ok);
     assert!(err.contains("--watch"), "{err}");
 }
+
+#[test]
+fn printing_a_folder_is_an_error() {
+    let (ok, _, err) = mdr(&["tests/fixtures"], None);
+    assert!(!ok);
+    assert!(err.contains("is a folder"), "{err}");
+}

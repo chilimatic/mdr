@@ -15,6 +15,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     app.on_resize(area.width, body.height);
 
+    if app.mode == Mode::Picker {
+        draw_picker(f, app, body, status);
+        return;
+    }
     let w = app.content_width().min(body.width);
     let content = Rect { x: body.x + (body.width - w) / 2, width: w, ..body };
     draw_doc(f, app, content);
@@ -170,6 +174,57 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)).style(theme.status), area);
 }
 
+fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
+    let theme = &app.theme;
+    let Some(pk) = &app.picker else { return };
+    let visible = pk.visible();
+    let items: Vec<ListItem> = if visible.is_empty() {
+        vec![ListItem::new(Span::styled("  no matching files", theme.dim))]
+    } else {
+        visible
+            .iter()
+            .map(|&i| {
+                let p = &pk.files[i];
+                let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).filter(|d| !d.is_empty());
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let mut spans = Vec::new();
+                if let Some(d) = dir {
+                    spans.push(Span::styled(format!("{d}/"), theme.dim));
+                }
+                spans.push(Span::styled(name, theme.text));
+                ListItem::new(Line::from(spans))
+            })
+            .collect()
+    };
+    let title = format!(" {} ", pk.root.display());
+    let list = List::new(items)
+        .block(Block::bordered().title(title).border_style(theme.popup_border))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    let mut state = ListState::default().with_selected((!visible.is_empty()).then_some(pk.selected));
+    f.render_stateful_widget(list, body, &mut state);
+
+    let line = if pk.filtering {
+        Line::from(vec![
+            Span::styled(" / ", theme.status_accent),
+            Span::styled(format!(" {}█", pk.filter), theme.status),
+            Span::styled(format!("  {} of {} files", visible.len(), pk.files.len()), theme.status),
+        ])
+    } else {
+        let filter = if pk.filter.is_empty() { String::new() } else { format!("  filter: {}", pk.filter) };
+        Line::from(vec![
+            Span::styled(" files ", theme.status_accent),
+            Span::styled(format!(" {} of {}{filter}", visible.len(), pk.files.len()), theme.status),
+            Span::styled("   ⏎ open · / filter · q quit", theme.status),
+        ])
+    };
+    let line = match &app.message {
+        Some((msg, _)) => Line::from(vec![Span::styled(" files ", theme.status_accent), Span::styled(format!(" {msg}"), theme.status)]),
+        None => line,
+    };
+    f.render_widget(Paragraph::new(line).style(theme.status), status);
+}
+
 fn draw_toc(f: &mut Frame, app: &App, body: Rect) {
     let width = (body.width / 2).clamp(20, 50).min(body.width);
     let area = Rect { width, ..body };
@@ -209,7 +264,7 @@ const HELP: &[(&str, &str)] = &[
     ("n/N", "next/prev match"),
     ("Tab/S-Tab", "select link"),
     ("⏎ / o", "open link"),
-    ("Backspace", "back to previous file"),
+    ("Backspace", "back (previous file or file list)"),
     ("T", "toggle dark/light theme"),
     ("+/-/0", "wider/narrower/reset width"),
     ("w", "toggle watch mode"),
@@ -383,6 +438,41 @@ mod tests {
         assert_eq!(app.hscroll, 0);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(!screen(&term).last().unwrap().contains('⇆'));
+    }
+
+    #[test]
+    fn folder_picker_opens_files_and_goes_back() {
+        let picker = crate::picker::Picker::scan(std::path::Path::new("tests/fixtures")).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.start_picker(picker, false);
+        let mut term = Terminal::new(TestBackend::new(70, 15)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("▶ diagrams.md")), "{s:#?}");
+        assert!(s.last().unwrap().contains("3 of 3"));
+
+        // Filter to one file and open it.
+        key(&mut app, KeyCode::Char('/'));
+        for c in "oth".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).last().unwrap().contains("1 of 3"));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.file_name(), "other.md");
+
+        // Follow a link, then Backspace twice: previous file, then the list.
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.file_name(), "kitchen-sink.md");
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.file_name(), "other.md");
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.mode, Mode::Picker);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("▶ other.md")));
     }
 
     #[test]

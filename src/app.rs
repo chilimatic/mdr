@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use crate::highlight::Highlighter;
 use crate::images::Images;
 use crate::layout::{self, Ctx, Doc};
+use crate::picker::Picker;
 use crate::search::{self, Search};
 use crate::theme::{Theme, ThemeKind};
 use crate::ui;
@@ -20,12 +21,14 @@ use crate::watch::{self, Watcher};
 pub const DEFAULT_MAX_WIDTH: u16 = 100;
 const MIN_LAYOUT_WIDTH: u16 = 20;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Normal,
     SearchInput,
     Toc,
     Help,
+    /// File list of `mdr DIR`.
+    Picker,
 }
 
 pub struct App {
@@ -49,6 +52,10 @@ pub struct App {
     pub message: Option<(String, Instant)>,
     pub watcher: Option<Watcher>,
     pub history: Vec<(PathBuf, usize)>,
+    /// Set when mdr was started on a folder.
+    pub picker: Option<Picker>,
+    /// Start watching each file opened from the picker (`mdr --watch DIR`).
+    pub auto_watch: bool,
     layout_width: usize,
     quit: bool,
 }
@@ -81,6 +88,8 @@ impl App {
             message: None,
             watcher: None,
             history: Vec::new(),
+            picker: None,
+            auto_watch: false,
             layout_width: 0,
             quit: false,
         }
@@ -88,9 +97,21 @@ impl App {
 
     pub fn file_name(&self) -> String {
         match &self.path {
-            Some(p) => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            // Inside a folder, show the path relative to it.
+            Some(p) => match self.picker.as_ref().and_then(|pk| p.strip_prefix(&pk.root).ok()) {
+                Some(rel) => rel.to_string_lossy().into_owned(),
+                None => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            },
+            None if self.picker.is_some() => String::new(),
             None => "<stdin>".into(),
         }
+    }
+
+    /// Shows the file list of a folder instead of a document.
+    pub fn start_picker(&mut self, picker: Picker, watch: bool) {
+        self.picker = Some(picker);
+        self.auto_watch = watch;
+        self.mode = Mode::Picker;
     }
 
     pub fn content_width(&self) -> u16 {
@@ -243,7 +264,7 @@ impl App {
         self.search = None;
         self.images.clear();
         self.render_doc();
-        if watching {
+        if watching || self.auto_watch {
             self.toggle_watch();
         }
         if let Some(a) = anchor {
@@ -253,7 +274,11 @@ impl App {
 
     fn go_back(&mut self) {
         let Some((path, scroll)) = self.history.pop() else {
-            self.set_message("no previous file");
+            if self.picker.is_some() {
+                self.mode = Mode::Picker;
+            } else {
+                self.set_message("no previous file");
+            }
             return;
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -452,6 +477,7 @@ impl App {
             Mode::Toc => self.key_toc(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Normal => self.key_normal(key),
+            Mode::Picker => self.key_picker(key),
         }
     }
 
@@ -479,6 +505,61 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn key_picker(&mut self, key: KeyEvent) {
+        let Some(pk) = self.picker.as_mut() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        if pk.filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    pk.filter.clear();
+                    pk.filtering = false;
+                }
+                KeyCode::Enter => pk.filtering = false,
+                KeyCode::Backspace => {
+                    pk.filter.pop();
+                }
+                KeyCode::Char(c) => {
+                    pk.filter.push(c);
+                    pk.selected = 0;
+                }
+                KeyCode::Down => pk.selected += 1,
+                KeyCode::Up => pk.selected = pk.selected.saturating_sub(1),
+                _ => {}
+            }
+            pk.clamp();
+            return;
+        }
+        let page = self.view_height.max(2) - 1;
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Esc => pk.filter.clear(),
+            KeyCode::Char('/') => {
+                pk.filtering = true;
+                pk.filter.clear();
+            }
+            KeyCode::Char('j') | KeyCode::Down => pk.selected += 1,
+            KeyCode::Char('k') | KeyCode::Up => pk.selected = pk.selected.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => pk.selected = 0,
+            KeyCode::Char('G') | KeyCode::End => pk.selected = usize::MAX,
+            KeyCode::PageDown | KeyCode::Char(' ') => pk.selected = pk.selected.saturating_add(page),
+            KeyCode::PageUp | KeyCode::Char('b') => pk.selected = pk.selected.saturating_sub(page),
+            KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(path) = pk.selected_path() {
+                    // A file opened from the list starts a new history.
+                    self.history.clear();
+                    self.path = None;
+                    self.mode = Mode::Normal;
+                    self.open_file(path, None);
+                }
+                return;
+            }
+            _ => {}
+        }
+        pk.clamp();
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
