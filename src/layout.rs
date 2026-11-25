@@ -422,7 +422,11 @@ impl<'a> Builder<'a> {
     fn begin_block(&mut self) {
         self.flush_inline();
         if self.need_blank && !self.any_pending() && !self.doc.lines.is_empty() {
-            self.blank_line();
+            // The separator belongs to the block above, so a block's rows start with its text.
+            let prev = self.doc.lines.last().map_or(self.src, |l| l.src);
+            let p = self.blank_prefix();
+            let i = self.push_line(p);
+            self.doc.lines[i].src = prev;
         }
         self.need_blank = false;
     }

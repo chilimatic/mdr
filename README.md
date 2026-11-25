@@ -19,6 +19,10 @@ mdr README.md
 - Dark and light themes. On start, mdr picks the theme from the terminal background.
 - Adjustable text width. The default is 100 columns or the terminal width, whichever is smaller.
 - Watch mode: mdr reloads the file when it changes on disk and keeps your position.
+- `e` opens the file in your editor at the line you are reading. mdr reloads it when the
+  editor closes.
+- mdr remembers where you stopped in each file and opens it there next time.
+- Folders: `mdr docs/` lists the markdown files, filters them by name and searches their text.
 - Inline images through the kitty, sixel or iTerm2 graphics protocols. In other terminals
   mdr draws images with block characters.
 - Diagrams and charts drawn as text: Mermaid, Graphviz DOT, and a simple chart format.
@@ -78,12 +82,19 @@ most 8 levels deep and lists at most 5000 files.
 |---|---|
 | `j` `k` / `↓` `↑` | Move the selection |
 | `g` `G` / `Space` `b` | First / last / page down / page up |
-| `/` | Filter. Every word you type must appear in the path; case is ignored. `Enter` keeps the filter, `Esc` clears it. |
+| `/` | Filter by name. Every word you type must appear in the path; case is ignored. `Enter` keeps the filter, `Esc` clears it. |
+| `s` | Search the text of all files. Type the text and press `Enter`. |
 | `Enter` / `o` / `l` / `→` | Open the file |
 | `q` | Quit |
 
+The text search shows one line for each line that contains the text: the file, the line
+number and the line. `Enter` opens the file at that place, with the text selected as a search,
+so `n` and `N` go to the next matches in that file. `s` starts a new search, and `Esc` goes back
+to the file list. Like the search in a document, the search ignores case unless the text has an
+uppercase letter. It stops after 1000 lines, and it skips files larger than 4 MB.
+
 In an open file, `Backspace` goes back through the files you reached with links, and then
-to the list. With `--watch`, each file you open from the list is watched.
+to the list or the search results. With `--watch`, each file you open from the list is watched.
 
 ### Printed output
 
@@ -123,11 +134,31 @@ mdr --print notes.md                   # print to the terminal, with colors
 | `+` / `-` / `0` | Wider / narrower text / default width |
 | `w` | Turn watch mode on or off |
 | `r` | Reload the file |
+| `e` | Edit the file in `$VISUAL` or `$EDITOR` (default `vi`), at the line at the top of the screen |
 | `Esc` | Clear the search and link selection |
 | `?` | Show the key list |
 | `q` / `Ctrl-c` | Quit |
 
 The search ignores case, unless the search text has an uppercase letter.
+
+### Editor
+
+`e` starts the editor in `$VISUAL`, else `$EDITOR`, else `vi`. The shell runs the command, so
+it can contain options and quotes. For vi, Vim, Neovim, nano, Emacs, micro, Kakoune, Helix,
+Sublime Text, Zed and VS Code, mdr opens the file at the line at the top of the screen. In code
+blocks this is the exact line; in tables and wrapped paragraphs it is a line close to it. Other
+editors open the file at the start. A GUI editor must wait
+until you close the file, for example `EDITOR="code --wait"`. When the editor closes, mdr reloads
+the file.
+
+### Reading position
+
+When you leave a file or quit, mdr stores the position in
+`$XDG_STATE_HOME/mdr/positions` (default `~/.local/state/mdr/positions`). The next time you
+open the file from the command line or the file list, mdr starts there and shows "back where you
+stopped". A file you open with a link starts at the top or at the link's heading. Press `g` to go to the top.
+If you leave a file at the top, mdr forgets its position. mdr keeps the last 500 files. To
+forget all positions, delete the file.
 
 Mouse capture is off, so you can select text with the mouse. Most terminals turn the
 mouse wheel into arrow keys in full-screen programs, so the wheel scrolls too.
@@ -211,5 +242,8 @@ element. Open them with `cargo run -- tests/fixtures/diagrams.md` to check chang
 | `src/highlight.rs` | Syntax highlighting |
 | `src/images.rs` | Image protocol detection and image cache |
 | `src/watch.rs` | File watching |
+| `src/picker.rs` | File list for folders |
+| `src/grep.rs` | Text search across the files of a folder |
+| `src/positions.rs` | Stored reading positions |
 | `src/search.rs` | Search |
 | `src/theme.rs` | Colors |

@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::grep::Grep;
+
 const MAX_DEPTH: usize = 8;
 const MAX_FILES: usize = 5000;
 const SKIP_DIRS: [&str; 2] = ["target", "node_modules"];
@@ -14,6 +16,8 @@ pub struct Picker {
     pub filtering: bool,
     /// Index into `visible()`.
     pub selected: usize,
+    /// Text search across the files, shown instead of the file list.
+    pub grep: Option<Grep>,
 }
 
 fn is_markdown(p: &Path) -> bool {
@@ -54,7 +58,7 @@ impl Picker {
             }
         }
         files.sort();
-        Ok(Picker { root: root.to_path_buf(), files, filter: String::new(), filtering: false, selected: 0 })
+        Ok(Picker { root: root.to_path_buf(), files, filter: String::new(), filtering: false, selected: 0, grep: None })
     }
 
     /// Indices into `files` that match the filter. Every word must appear, case is ignored.

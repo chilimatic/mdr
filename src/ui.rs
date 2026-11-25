@@ -177,6 +177,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
     let theme = &app.theme;
     let Some(pk) = &app.picker else { return };
+    if let Some(g) = &pk.grep {
+        draw_grep(f, app, pk, g, body, status);
+        return;
+    }
     let visible = pk.visible();
     let items: Vec<ListItem> = if visible.is_empty() {
         vec![ListItem::new(Span::styled("  no matching files", theme.dim))]
@@ -215,12 +219,65 @@ fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
         Line::from(vec![
             Span::styled(" files ", theme.status_accent),
             Span::styled(format!(" {} of {}{filter}", visible.len(), pk.files.len()), theme.status),
-            Span::styled("   ⏎ open · / filter · q quit", theme.status),
+            Span::styled("   ⏎ open · / filter names · s search text · q quit", theme.status),
         ])
     };
     let line = match &app.message {
         Some((msg, _)) => Line::from(vec![Span::styled(" files ", theme.status_accent), Span::styled(format!(" {msg}"), theme.status)]),
         None => line,
+    };
+    f.render_widget(Paragraph::new(line).style(theme.status), status);
+}
+
+fn draw_grep(f: &mut Frame, app: &App, pk: &crate::picker::Picker, g: &crate::grep::Grep, body: Rect, status: Rect) {
+    let theme = &app.theme;
+    let items: Vec<ListItem> = if g.hits.is_empty() {
+        let msg = if g.editing { "  type the text to find, ⏎ to search" } else { "  no matches" };
+        vec![ListItem::new(Span::styled(msg, theme.dim))]
+    } else {
+        g.hits
+            .iter()
+            .map(|h| {
+                let name = pk.files[h.file].to_string_lossy();
+                let before: String = h.text.chars().take(h.start).collect();
+                let found: String = h.text.chars().skip(h.start).take(h.end - h.start).collect();
+                let after: String = h.text.chars().skip(h.end).collect();
+                ListItem::new(Line::from(vec![
+                    Span::styled(name.into_owned(), theme.list_marker),
+                    Span::styled(format!(":{}  ", h.line), theme.dim),
+                    Span::styled(before, theme.text),
+                    Span::styled(found, theme.search_match),
+                    Span::styled(after, theme.text),
+                ]))
+            })
+            .collect()
+    };
+    let title = format!(" search in {} ", pk.root.display());
+    let list = List::new(items)
+        .block(Block::bordered().title(title).border_style(theme.popup_border))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    let mut state = ListState::default().with_selected((!g.hits.is_empty()).then_some(g.selected));
+    f.render_stateful_widget(list, body, &mut state);
+
+    let line = if let Some((msg, _)) = &app.message {
+        Line::from(vec![Span::styled(" search ", theme.status_accent), Span::styled(format!(" {msg}"), theme.status)])
+    } else if g.editing {
+        Line::from(vec![
+            Span::styled(" search ", theme.status_accent),
+            Span::styled(format!(" {}█", g.query), theme.status),
+            Span::styled("   ⏎ search · esc cancel", theme.status),
+        ])
+    } else {
+        let more = if g.truncated { " (stopped at the first matches)" } else { "" };
+        Line::from(vec![
+            Span::styled(" search ", theme.status_accent),
+            Span::styled(
+                format!(" {}  {} lines in {} files{more}", g.query, g.hits.len(), g.files_hit()),
+                theme.status,
+            ),
+            Span::styled("   ⏎ open · s new search · esc file list", theme.status),
+        ])
     };
     f.render_widget(Paragraph::new(line).style(theme.status), status);
 }
@@ -269,6 +326,7 @@ const HELP: &[(&str, &str)] = &[
     ("+/-/0", "wider/narrower/reset width"),
     ("w", "toggle watch mode"),
     ("r", "reload file"),
+    ("e", "edit in $EDITOR at this line"),
     ("esc", "clear search/selection"),
     ("q", "quit"),
 ];
@@ -473,6 +531,154 @@ mod tests {
         assert_eq!(app.mode, Mode::Picker);
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(screen(&term).iter().any(|l| l.contains("▶ other.md")));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            key(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn folder_search_opens_file_at_match() {
+        let picker = crate::picker::Picker::scan(std::path::Path::new("tests/fixtures")).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.start_picker(picker, false);
+        let mut term = Terminal::new(TestBackend::new(80, 15)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+
+        key(&mut app, KeyCode::Char('s'));
+        type_text(&mut app, "bananas");
+        key(&mut app, KeyCode::Enter);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("▶ kitchen-sink.md:") && l.contains("bananas")), "{s:#?}");
+        assert!(s.last().unwrap().contains("1 lines in 1 files"), "{s:#?}");
+
+        // Enter opens the file with the match selected and visible.
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.file_name(), "kitchen-sink.md");
+        let m = app.search.as_ref().map(|s| s.matches[s.current]).expect("search set");
+        assert!(m.line >= app.scroll && m.line < app.scroll + app.view_height);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).last().unwrap().contains("/bananas  1/1"));
+
+        // Backspace returns to the results.
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.mode, Mode::Picker);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("search in")));
+
+        // A new search that is cancelled goes back to the shown results.
+        key(&mut app, KeyCode::Char('s'));
+        type_text(&mut app, "xyz");
+        key(&mut app, KeyCode::Esc);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).last().unwrap().contains("bananas  1 lines"), "{:?}", screen(&term).last());
+
+        // Esc goes to the file list, with the file selected.
+        key(&mut app, KeyCode::Esc);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.last().unwrap().contains("3 of 3"));
+        assert!(s.iter().any(|l| l.contains("▶ kitchen-sink.md")), "{s:#?}");
+
+        // No matches.
+        key(&mut app, KeyCode::Char('s'));
+        type_text(&mut app, "zzzqqq");
+        key(&mut app, KeyCode::Enter);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("no matches")));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Picker);
+    }
+
+    #[test]
+    fn folder_search_selects_the_hit_inside_a_block() {
+        let dir = std::env::temp_dir().join(format!("mdr-grep-block-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let md = "# T\n\n```text\none needle\ntwo needle\nthree\n```\n\nA later needle.\n";
+        std::fs::write(dir.join("a.md"), md).unwrap();
+        let picker = crate::picker::Picker::scan(&dir).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.start_picker(picker, false);
+        let mut term = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char('s'));
+        type_text(&mut app, "needle");
+        key(&mut app, KeyCode::Enter);
+        for (n, want) in [(0, "one"), (1, "two"), (2, "later")] {
+            if n > 0 {
+                key(&mut app, KeyCode::Backspace);
+                key(&mut app, KeyCode::Char('j'));
+            }
+            key(&mut app, KeyCode::Enter);
+            let s = app.search.as_ref().unwrap();
+            let line = &app.doc.lines[s.matches[s.current].line].plain;
+            assert!(line.contains(want), "hit {n}: {line:?}");
+            // The editor opens at the same source line.
+            app.scroll = s.matches[s.current].line;
+            assert!(md.lines().nth(app.top_source_line() - 1).unwrap().contains(want));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reading_position_is_remembered() {
+        let dir = std::env::temp_dir().join(format!("mdr-ui-positions-{}", std::process::id()));
+        let picker = crate::picker::Picker::scan(std::path::Path::new("tests/fixtures")).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.positions = Some(crate::positions::Positions::new(dir.join("positions")));
+        app.start_picker(picker, false);
+        let mut term = Terminal::new(TestBackend::new(70, 15)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.file_name(), "kitchen-sink.md");
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        for _ in 0..12 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+        // Inside the table, so several lines share one source offset.
+        let mut n = 0;
+        while app.scroll == 0 || app.doc.lines[app.scroll - 1].src != app.doc.lines[app.scroll].src {
+            key(&mut app, KeyCode::Char('j'));
+            n += 1;
+            assert!(n < 100, "no multi-line block found");
+        }
+        let top = app.scroll;
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.scroll, top);
+        assert!(app.message.as_ref().unwrap().0.contains("where you stopped"));
+
+        // At the top the position is forgotten.
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.scroll, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edit_key_asks_for_the_top_source_line() {
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char(']'));
+        key(&mut app, KeyCode::Char(']'));
+        let title = app.doc.headings[app.current_heading().unwrap()].title.clone();
+        key(&mut app, KeyCode::Char('e'));
+        let (path, line) = app.edit_request.take().expect("edit requested");
+        assert_eq!(path, std::path::Path::new("tests/fixtures/kitchen-sink.md"));
+        let src = std::fs::read_to_string(&path).unwrap();
+        let text = src.lines().nth(line - 1).unwrap();
+        assert!(text.starts_with('#') && text.contains(&title), "line {line}: {text:?} vs {title:?}");
+
+        let mut stdin = App::new(None, "x".into(), ThemeKind::Dark, None, Images::new(None));
+        key(&mut stdin, KeyCode::Char('e'));
+        assert!(stdin.edit_request.is_none());
     }
 
     #[test]

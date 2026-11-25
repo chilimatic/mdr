@@ -1,9 +1,11 @@
 mod app;
 mod diagram;
+mod grep;
 mod highlight;
 mod images;
 mod layout;
 mod picker;
+mod positions;
 mod print;
 mod search;
 mod theme;
@@ -155,6 +157,7 @@ fn run(
     };
 
     let mut app = App::new(path, text, theme, args.width, Images::new(image_picker));
+    app.positions = positions::Positions::default_location();
     if let Some(pk) = folder {
         app.start_picker(pk, args.watch);
     } else if args.watch {

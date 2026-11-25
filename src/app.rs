@@ -8,10 +8,12 @@ use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::grep::{self, Grep};
 use crate::highlight::Highlighter;
 use crate::images::Images;
 use crate::layout::{self, Ctx, Doc};
 use crate::picker::Picker;
+use crate::positions::Positions;
 use crate::search::{self, Search};
 use crate::theme::{Theme, ThemeKind};
 use crate::ui;
@@ -56,6 +58,13 @@ pub struct App {
     pub picker: Option<Picker>,
     /// Start watching each file opened from the picker (`mdr --watch DIR`).
     pub auto_watch: bool,
+    /// Where the last reading position of each file is stored. `None` in tests.
+    pub positions: Option<Positions>,
+    /// Set by `e`: file and source line to open in the editor. The main loop runs it,
+    /// because the editor needs the terminal.
+    pub edit_request: Option<(PathBuf, usize)>,
+    /// File changes before this time are ignored (the editor's own writes; mdr reloads after it).
+    ignore_changes_until: Option<Instant>,
     layout_width: usize,
     quit: bool,
 }
@@ -90,6 +99,9 @@ impl App {
             history: Vec::new(),
             picker: None,
             auto_watch: false,
+            positions: None,
+            edit_request: None,
+            ignore_changes_until: None,
             layout_width: 0,
             quit: false,
         }
@@ -192,10 +204,10 @@ impl App {
 
     /// Lays out again and keeps the same source position at the top of the screen.
     pub fn relayout(&mut self) {
-        let anchor = self.doc.lines.get(self.scroll).map(|l| l.src);
+        let anchor = self.anchor();
         self.render_doc();
-        if let Some(src) = anchor {
-            self.scroll = self.doc.lines.iter().position(|l| l.src >= src).unwrap_or(self.scroll);
+        if let Some(a) = anchor {
+            self.scroll_to_anchor(a);
         }
         self.scroll = self.scroll.min(self.max_scroll());
         self.hscroll = self.hscroll.min(self.max_hscroll());
@@ -244,14 +256,16 @@ impl App {
         self.set_message("reloaded");
     }
 
-    fn open_file(&mut self, path: PathBuf, anchor: Option<&str>) {
+    /// Returns false if the file cannot be read; the current document stays.
+    fn open_file(&mut self, path: PathBuf, anchor: Option<&str>) -> bool {
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {
                 self.set_message(format!("cannot open {}: {e}", path.display()));
-                return;
+                return false;
             }
         };
+        self.save_position();
         if let Some(cur) = self.path.take() {
             self.history.push((cur, self.scroll));
         }
@@ -270,12 +284,105 @@ impl App {
         if let Some(a) = anchor {
             self.jump_to_anchor(a);
         }
+        true
+    }
+
+    /// Stores the reading position of the current file.
+    pub fn save_position(&self) {
+        let (Some(pos), Some(path)) = (&self.positions, &self.path) else { return };
+        if self.mode == Mode::Picker {
+            return;
+        }
+        pos.set(path, self.anchor().filter(|_| self.scroll > 0));
+    }
+
+    /// Scrolls to the stored reading position of the current file.
+    pub fn resume_position(&mut self) {
+        let (Some(pos), Some(path)) = (&self.positions, &self.path) else { return };
+        let Some(a) = pos.get(path) else { return };
+        self.scroll_to_anchor(a);
+        if self.scroll > 0 {
+            self.set_message("back where you stopped (g: top)");
+        }
+    }
+
+    /// The line at the top of the screen as (block source offset, row in the block).
+    /// It stays valid when the width changes.
+    fn anchor(&self) -> Option<(usize, usize)> {
+        let l = self.doc.lines.get(self.scroll)?;
+        Some((l.src, self.scroll - self.block_start(self.scroll)))
+    }
+
+    fn scroll_to_anchor(&mut self, (src, row): (usize, usize)) {
+        if let Some(first) = self.doc.lines.iter().position(|l| l.src >= src) {
+            // Stay inside the block: it may have fewer rows at another width.
+            let same = self.doc.lines[first..].iter().take_while(|l| l.src == self.doc.lines[first].src).count();
+            self.scroll = (first + row.min(same.saturating_sub(1))).min(self.max_scroll());
+        }
+    }
+
+    /// First rendered line of the block that `line` belongs to. All lines of a block
+    /// (paragraph, code block, table) have the same `src`.
+    fn block_start(&self, line: usize) -> usize {
+        let src = self.doc.lines[line].src;
+        self.doc.lines[..line].iter().rposition(|o| o.src != src).map_or(0, |i| i + 1)
+    }
+
+    /// Scrolls to the source byte `offset` (a line start) and searches for `query`,
+    /// selecting the match there. Used when a file is opened from the folder search.
+    fn goto_source(&mut self, offset: usize, query: &str) {
+        self.search_input = query.to_string();
+        let Some(last) = self.doc.lines.iter().rposition(|l| l.src <= offset) else { return };
+        let block_src = self.doc.lines[last].src;
+        let first = self.block_start(last);
+        // The hit is the n-th occurrence in its block: count the ones before it in the source.
+        let before = search::occurrences(self.text.get(block_src..offset).unwrap_or(""), query).len();
+        let matches = search::find(&self.doc, query);
+        let in_block: Vec<usize> = (0..matches.len()).filter(|&i| (first..=last).contains(&matches[i].line)).collect();
+        let current = in_block
+            .get(before)
+            .or(in_block.last())
+            .copied()
+            .or_else(|| matches.iter().position(|m| m.line >= first));
+        match current {
+            Some(current) => {
+                self.search = Some(Search { query: query.to_string(), matches, current });
+                self.reveal_match();
+            }
+            None => {
+                self.search = None;
+                self.scroll = first.saturating_sub(self.view_height / 3).min(self.max_scroll());
+            }
+        }
+    }
+
+    /// Source line (from 1) of the text at the top of the screen. Inside a block, each
+    /// rendered row counts as one source line, but never past the start of the next block.
+    /// This is exact for code blocks and close for other blocks.
+    pub fn top_source_line(&self) -> usize {
+        let line_of = |src: usize| self.text.get(..src).map_or(0, |t| t.matches('\n').count()) + 1;
+        let Some(l) = self.doc.lines.get(self.scroll) else { return 1 };
+        let start = line_of(l.src);
+        let row = self.scroll - self.block_start(self.scroll);
+        let end = match self.doc.lines[self.scroll..].iter().find(|o| o.src > l.src) {
+            Some(next) => line_of(next.src).saturating_sub(1).max(start),
+            None => self.text.lines().count().max(start),
+        };
+        (start + row).min(end)
     }
 
     fn go_back(&mut self) {
+        self.save_position();
         let Some((path, scroll)) = self.history.pop() else {
-            if self.picker.is_some() {
+            if let Some(pk) = self.picker.as_mut() {
                 self.mode = Mode::Picker;
+                self.message = None;
+                // Select the file the reader comes from.
+                if let Some(cur) = &self.path
+                    && let Some(i) = pk.visible().iter().position(|&f| pk.root.join(&pk.files[f]) == *cur)
+                {
+                    pk.selected = i;
+                }
             } else {
                 self.set_message("no previous file");
             }
@@ -508,6 +615,10 @@ impl App {
     }
 
     fn key_picker(&mut self, key: KeyEvent) {
+        if self.picker.as_ref().is_some_and(|pk| pk.grep.is_some()) {
+            self.key_grep(key);
+            return;
+        }
         let Some(pk) = self.picker.as_mut() else {
             self.mode = Mode::Normal;
             return;
@@ -548,18 +659,88 @@ impl App {
             KeyCode::PageDown | KeyCode::Char(' ') => pk.selected = pk.selected.saturating_add(page),
             KeyCode::PageUp | KeyCode::Char('b') => pk.selected = pk.selected.saturating_sub(page),
             KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('l') | KeyCode::Right => {
-                if let Some(path) = pk.selected_path() {
-                    // A file opened from the list starts a new history.
-                    self.history.clear();
-                    self.path = None;
-                    self.mode = Mode::Normal;
-                    self.open_file(path, None);
+                if let Some(path) = pk.selected_path()
+                    && self.open_from_picker(path)
+                {
+                    self.resume_position();
                 }
                 return;
+            }
+            KeyCode::Char('s') => {
+                pk.grep = Some(Grep { editing: true, ..Grep::default() });
             }
             _ => {}
         }
         pk.clamp();
+    }
+
+    /// Opens a file from the list or the folder search. A file opened there starts a new history.
+    fn open_from_picker(&mut self, path: PathBuf) -> bool {
+        let (old_path, old_history) = (self.path.take(), std::mem::take(&mut self.history));
+        self.mode = Mode::Normal;
+        if self.open_file(path, None) {
+            return true;
+        }
+        self.path = old_path;
+        self.history = old_history;
+        self.mode = Mode::Picker;
+        false
+    }
+
+    fn key_grep(&mut self, key: KeyEvent) {
+        let page = self.view_height.max(2) - 1;
+        let Some(pk) = self.picker.as_mut() else { return };
+        let Some(g) = pk.grep.as_mut() else { return };
+        if g.editing {
+            match key.code {
+                // Back to the shown results, if there are any.
+                KeyCode::Esc | KeyCode::Enter if g.query.is_empty() || key.code == KeyCode::Esc => {
+                    if g.previous.is_empty() {
+                        pk.grep = None;
+                    } else {
+                        g.query = std::mem::take(&mut g.previous);
+                        g.editing = false;
+                    }
+                }
+                KeyCode::Enter => {
+                    g.previous.clear();
+                    let (hits, truncated) = grep::search(&pk.root, &pk.files, &g.query);
+                    g.hits = hits;
+                    g.truncated = truncated;
+                    g.selected = 0;
+                    g.editing = false;
+                }
+                KeyCode::Backspace => {
+                    g.query.pop();
+                }
+                KeyCode::Char(c) => g.query.push(c),
+                _ => {}
+            }
+            return;
+        }
+        let last = g.hits.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Esc => pk.grep = None,
+            KeyCode::Char('s') | KeyCode::Char('/') => {
+                g.previous = std::mem::take(&mut g.query);
+                g.editing = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => g.selected = (g.selected + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => g.selected = g.selected.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => g.selected = 0,
+            KeyCode::Char('G') | KeyCode::End => g.selected = last,
+            KeyCode::PageDown | KeyCode::Char(' ') => g.selected = (g.selected + page).min(last),
+            KeyCode::PageUp | KeyCode::Char('b') => g.selected = g.selected.saturating_sub(page),
+            KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('l') | KeyCode::Right => {
+                let Some(hit) = g.hits.get(g.selected) else { return };
+                let (path, offset, query) = (pk.root.join(&pk.files[hit.file]), hit.offset, g.query.clone());
+                if self.open_from_picker(path) {
+                    self.goto_source(offset, &query);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
@@ -639,6 +820,10 @@ impl App {
             }
             KeyCode::Char('w') => self.toggle_watch(),
             KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('e') => match self.path.clone() {
+                Some(p) => self.edit_request = Some((p, self.top_source_line())),
+                None => self.set_message("cannot edit stdin"),
+            },
             KeyCode::Char('?') => self.mode = Mode::Help,
             _ => {}
         }
@@ -656,8 +841,15 @@ impl App {
     // -- main loop ----------------------------------------------------------
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let result = self.event_loop(terminal);
+        self.save_position();
+        result
+    }
+
+    fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let size = terminal.size().context("cannot read terminal size")?;
         self.on_resize(size.width, size.height.saturating_sub(1));
+        self.resume_position();
         let mut dirty = true;
         while !self.quit {
             if self.message.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3)) {
@@ -672,6 +864,9 @@ impl App {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => {
                         self.on_key(k);
+                        if let Some((path, line)) = self.edit_request.take() {
+                            self.run_editor(terminal, &path, line)?;
+                        }
                         dirty = true;
                     }
                     Event::Resize(..) => dirty = true,
@@ -679,12 +874,74 @@ impl App {
                 }
             }
             let changed = self.watcher.as_ref().is_some_and(|w| w.rx.try_iter().count() > 0);
-            if changed {
+            let ignored = self.ignore_changes_until.is_some_and(|t| Instant::now() < t);
+            if changed && !ignored {
                 self.reload();
                 dirty = true;
             }
         }
         Ok(())
+    }
+
+    /// Hands the terminal to `$VISUAL` / `$EDITOR` (default `vi`) and reloads afterwards.
+    fn run_editor(&mut self, terminal: &mut DefaultTerminal, path: &Path, line: usize) -> Result<()> {
+        use ratatui::crossterm::{cursor, execute, terminal as ct};
+        let editor = ["VISUAL", "EDITOR"]
+            .iter()
+            .filter_map(|k| std::env::var(k).ok())
+            .find(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "vi".into());
+        let first = editor_program(&editor);
+        let program = Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or(first).to_string();
+        let args = editor_args(&program, &path.to_string_lossy(), line);
+
+        let mut out = std::io::stdout();
+        ct::disable_raw_mode()?;
+        execute!(out, ct::LeaveAlternateScreen, cursor::Show)?;
+        // Like git: the shell reads $EDITOR, so quotes and options in it work.
+        let status = Command::new("sh").arg("-c").arg(format!("{editor} \"$@\"")).arg("mdr").args(&args).status();
+        ct::enable_raw_mode()?;
+        execute!(out, ct::EnterAlternateScreen, ct::Clear(ct::ClearType::All))?;
+        // A new terminal redraws everything. `Terminal::clear` would ask the terminal
+        // for the cursor position, and not every terminal answers.
+        *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))?;
+
+        // The images were on the old screen.
+        self.images.clear();
+        // The watcher reports the edits up to its debounce delay later; the reload below covers them.
+        self.ignore_changes_until = Some(Instant::now() + Duration::from_millis(500));
+        match status {
+            Ok(s) if s.success() => self.reload(),
+            // 127: the shell did not find the editor.
+            Ok(s) if s.code() == Some(127) => self.set_message(format!("cannot start {program} (set $EDITOR)")),
+            Ok(s) => {
+                self.reload();
+                self.set_message(format!("{program} exited with {s}"));
+            }
+            Err(e) => self.set_message(format!("cannot start {program}: {e} (set $EDITOR)")),
+        }
+        Ok(())
+    }
+}
+
+/// The program in an editor command: the first word, or the quoted text at the start.
+fn editor_program(cmd: &str) -> &str {
+    let cmd = cmd.trim_start();
+    match cmd.chars().next() {
+        Some(q @ ('"' | '\'')) => cmd[1..].split(q).next().unwrap_or(""),
+        _ => cmd.split_whitespace().next().unwrap_or(""),
+    }
+}
+
+/// Arguments that open `path` at `line` in a known editor. Unknown editors get only the path.
+fn editor_args(program: &str, path: &str, line: usize) -> Vec<String> {
+    let name = Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or(program);
+    match name {
+        "vi" | "vim" | "nvim" | "gvim" | "mvim" | "view" | "nano" | "pico" | "emacs" | "emacsclient" | "micro"
+        | "kak" | "joe" | "ne" | "mg" | "jed" | "mcedit" => vec![format!("+{line}"), path.into()],
+        "hx" | "helix" | "subl" | "zed" => vec![format!("{path}:{line}")],
+        "code" | "codium" | "code-insiders" | "cursor" => vec!["--goto".into(), format!("{path}:{line}")],
+        _ => vec![path.into()],
     }
 }
 
@@ -710,7 +967,23 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_decode;
+    use super::{editor_args, editor_program, percent_decode};
+
+    #[test]
+    fn editor_program_honours_quotes() {
+        assert_eq!(editor_program("nvim"), "nvim");
+        assert_eq!(editor_program("  code --wait"), "code");
+        assert_eq!(editor_program("\"/opt/My Editor/hx\" -c x"), "/opt/My Editor/hx");
+        assert_eq!(editor_program("'/a b/vim'"), "/a b/vim");
+    }
+
+    #[test]
+    fn editor_line_arguments() {
+        assert_eq!(editor_args("/usr/bin/nvim", "a.md", 12), ["+12", "a.md"]);
+        assert_eq!(editor_args("hx", "a.md", 3), ["a.md:3"]);
+        assert_eq!(editor_args("code", "a.md", 3), ["--goto", "a.md:3"]);
+        assert_eq!(editor_args("gedit", "a.md", 3), ["a.md"]);
+    }
 
     #[test]
     fn decodes_percent_escapes() {
