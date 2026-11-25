@@ -45,6 +45,19 @@ cargo install --locked --path . --root ~/.local   # installs ~/.local/bin/mdr
 
 Run the same command again to update. To remove: `cargo uninstall mdr` (add the same `--root`).
 
+### Shell completions and man page
+
+mdr prints them itself. For example:
+
+```sh
+mdr --completions bash > ~/.local/share/bash-completion/completions/mdr
+mdr --completions zsh > ~/.zfunc/_mdr    # ~/.zfunc must be in $fpath
+mdr --completions fish > ~/.config/fish/completions/mdr.fish
+mkdir -p ~/.local/share/man/man1 && mdr --man > ~/.local/share/man/man1/mdr.1
+```
+
+`--completions` also knows `elvish` and `powershell`.
+
 ## Usage
 
 ```text
@@ -60,6 +73,9 @@ mdr [OPTIONS] [FILE]
 | `--no-images` | Do not show images inline. |
 | `-p`, `--print` | Print the rendered document and exit, like `cat`. |
 | `--color auto\|always\|never` | Colors in printed output. Default: `auto`. |
+| `--no-config` | Ignore the config file. |
+| `--completions SHELL` | Print a shell completion script and exit. |
+| `--man` | Print the man page and exit. |
 
 Examples:
 
@@ -71,6 +87,23 @@ curl -s https://example.com/README.md | mdr
 
 When mdr reads from stdin, relative image paths are resolved from the current directory,
 and images are drawn with block characters.
+
+### Config file
+
+mdr reads `~/.config/mdr/config.toml` (or `$XDG_CONFIG_HOME/mdr/config.toml`, or the file in
+`$MDR_CONFIG`). All settings are optional. Options on the command line win over the file.
+
+```toml
+theme = "auto"      # auto, dark or light
+width = 100         # maximum text width in columns
+images = true       # show images inline
+color = "auto"      # colors in printed output: auto, always or never
+editor = "nvim"     # editor for `e`; default: $VISUAL, then $EDITOR, then vi
+resume = true       # remember the reading position of each file
+key_bar = true      # show the row with the keys that work now
+```
+
+An unknown setting or a wrong value is an error, and mdr names the line.
 
 ### Folders
 
@@ -146,7 +179,7 @@ The search ignores case, unless the search text has an uppercase letter.
 
 ### Editor
 
-`e` starts the editor in `$VISUAL`, else `$EDITOR`, else `vi`. The shell runs the command, so
+`e` starts the editor set in the config file, else `$VISUAL`, else `$EDITOR`, else `vi`. The shell runs the command, so
 it can contain options and quotes. For vi, Vim, Neovim, nano, Emacs, micro, Kakoune, Helix,
 Sublime Text, Zed and VS Code, mdr opens the file at the line at the top of the screen. In code
 blocks this is the exact line; in tables and wrapped paragraphs it is a line close to it. Other
@@ -248,5 +281,6 @@ element. Open them with `cargo run -- tests/fixtures/diagrams.md` to check chang
 | `src/picker.rs` | File list for folders |
 | `src/grep.rs` | Text search across the files of a folder |
 | `src/positions.rs` | Stored reading positions |
+| `src/config.rs` | Config file |
 | `src/search.rs` | Search |
 | `src/theme.rs` | Colors |

@@ -7,13 +7,17 @@ description = "Interactive terminal markdown viewer"
 [dependencies]
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
+clap_complete = "4.6.12"
+clap_mangen = "0.3.4"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 notify = "8.2.2"
 notify-debouncer-mini = "0.7.0"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 ratatui = "0.30.2"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm", "image-defaults"] }
+serde = { version = "1.0.229", features = ["derive"] }
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-onig", "default-themes", "dump-load"] }
+toml = { version = "1.2.3", default-features = false, features = ["parse", "serde"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-onig"] }
 unicode-width = "0.2.3"
 

@@ -63,6 +63,10 @@ pub struct App {
     /// Set by `e`: file and source line to open in the editor. The main loop runs it,
     /// because the editor needs the terminal.
     pub edit_request: Option<(PathBuf, usize)>,
+    /// Editor command from the config file; else `$VISUAL` / `$EDITOR`.
+    pub editor: Option<String>,
+    /// Show the key bar.
+    pub key_bar: bool,
     /// File changes before this time are ignored (the editor's own writes; mdr reloads after it).
     ignore_changes_until: Option<Instant>,
     layout_width: usize,
@@ -102,6 +106,8 @@ impl App {
             positions: None,
             edit_request: None,
             ignore_changes_until: None,
+            editor: None,
+            key_bar: true,
             layout_width: 0,
             quit: false,
         }
@@ -849,7 +855,7 @@ impl App {
     fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let size = terminal.size().context("cannot read terminal size")?;
         // The status bar and the key bar take two rows.
-        self.on_resize(size.width, size.height.saturating_sub(2));
+        self.on_resize(size.width, size.height.saturating_sub(1 + self.key_bar as u16));
         self.resume_position();
         let mut dirty = true;
         while !self.quit {
@@ -887,10 +893,10 @@ impl App {
     /// Hands the terminal to `$VISUAL` / `$EDITOR` (default `vi`) and reloads afterwards.
     fn run_editor(&mut self, terminal: &mut DefaultTerminal, path: &Path, line: usize) -> Result<()> {
         use ratatui::crossterm::{cursor, execute, terminal as ct};
-        let editor = ["VISUAL", "EDITOR"]
-            .iter()
-            .filter_map(|k| std::env::var(k).ok())
-            .find(|v| !v.trim().is_empty())
+        let editor = self
+            .editor
+            .clone()
+            .or_else(|| ["VISUAL", "EDITOR"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.trim().is_empty()))
             .unwrap_or_else(|| "vi".into());
         let first = editor_program(&editor);
         let program = Path::new(first).file_name().and_then(|n| n.to_str()).unwrap_or(first).to_string();

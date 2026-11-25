@@ -12,10 +12,13 @@ use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    let key_rows = if app.key_bar { 1 } else { 0 };
     let [body, status, keys] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(key_rows)]).areas(area);
     app.on_resize(area.width, body.height);
-    draw_keys(f, app, keys);
+    if app.key_bar {
+        draw_keys(f, app, keys);
+    }
 
     if app.mode == Mode::Picker {
         draw_picker(f, app, body, status);

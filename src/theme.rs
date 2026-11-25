@@ -4,7 +4,8 @@ use ratatui::style::{Color, Modifier, Style};
 use two_face::theme::EmbeddedThemeName;
 
 /// Theme selection from the command line.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
     Auto,
     Dark,
