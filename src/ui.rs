@@ -21,7 +21,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if app.mode == Mode::Picker {
-        draw_picker(f, app, body, status);
+        let list = draw_preview(f, app, body);
+        draw_picker(f, app, list, status);
         return;
     }
     let w = app.content_width().min(body.width);
@@ -51,14 +52,14 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                     if !g.hits.is_empty() {
                         k.extend([("j/k", "move"), ("⏎", "open")]);
                     }
-                    k.extend([("s", "new search"), ("Esc", "file list"), ("q", "quit")]);
+                    k.extend([("s", "new search"), ("Esc", "file list"), ("p", "preview"), ("q", "quit")]);
                 }
                 None if pk.filtering => k.extend([("⏎", "keep filter"), ("Esc", "clear filter")]),
                 None => {
                     if !pk.visible().is_empty() {
                         k.extend([("j/k", "move"), ("⏎", "open")]);
                     }
-                    k.extend([("/", "filter names"), ("s", "search text")]);
+                    k.extend([("/", "filter names"), ("s", "search text"), ("p", "preview")]);
                     if !pk.filter.is_empty() {
                         k.push(("Esc", "clear filter"));
                     }
@@ -338,6 +339,63 @@ fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
         None => line,
     };
     f.render_widget(Paragraph::new(line).style(theme.status), status);
+}
+
+/// Draws the preview of the selected file on the right, if there is room.
+/// Returns the area left for the list.
+fn draw_preview(f: &mut Frame, app: &mut App, body: Rect) -> Rect {
+    if !app.preview_on || body.width < 90 {
+        return body;
+    }
+    let Some(pk) = &app.picker else { return body };
+    // The file, and for a search hit: where to scroll and what to highlight.
+    let (path, focus) = match &pk.grep {
+        Some(g) if !g.editing || !g.hits.is_empty() => match g.hits.get(g.selected) {
+            Some(h) => (pk.root.join(&pk.files[h.file]), Some((h.offset, if g.editing { g.previous.clone() } else { g.query.clone() }))),
+            None => return body,
+        },
+        Some(_) => return body,
+        None => match pk.selected_path() {
+            Some(p) => (p, None),
+            None => return body,
+        },
+    };
+    let list_w = (body.width * 2 / 5).clamp(30, 60);
+    let [list, right] = Layout::horizontal([Constraint::Length(list_w), Constraint::Min(1)]).areas(body);
+    let inner_w = right.width.saturating_sub(4) as usize;
+    app.update_preview(&path, inner_w.max(10));
+    let Some(pv) = &app.preview else { return body };
+    let theme = &app.theme;
+    let height = right.height.saturating_sub(2) as usize;
+    // For a hit: the first line of its block (all lines of a block share `src`) that shows the text.
+    let top = match &focus {
+        Some((offset, q)) => {
+            let lines = &pv.doc.lines;
+            let block = lines.iter().rposition(|l| l.src <= *offset).map_or(0, |i| lines[i].src);
+            let first = lines.iter().position(|l| l.src == block).unwrap_or(0);
+            let hit = (first..lines.len()).find(|&i| !crate::search::occurrences(&lines[i].plain, q).is_empty()).unwrap_or(first);
+            hit.saturating_sub(2)
+        }
+        None => 0,
+    };
+    let lines: Vec<Line> = pv
+        .doc
+        .lines
+        .iter()
+        .skip(top)
+        .take(height)
+        .map(|l| match &focus {
+            Some((_, q)) => {
+                let ranges: Vec<_> = crate::search::occurrences(&l.plain, q).into_iter().map(|(a, b)| (a, b, theme.search_match)).collect();
+                Line::from(overlay(&l.spans, &ranges))
+            }
+            None => Line::from(l.spans.clone()),
+        })
+        .collect();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let block = Block::bordered().title(format!(" {name} ")).border_style(theme.popup_border);
+    f.render_widget(Paragraph::new(lines).block(block.padding(ratatui::widgets::Padding::horizontal(1))), right);
+    list
 }
 
 fn draw_grep(f: &mut Frame, app: &App, pk: &crate::picker::Picker, g: &crate::grep::Grep, body: Rect, status: Rect) {
@@ -905,6 +963,39 @@ mod tests {
         assert!(app.doc.lines.len() < total / 2);
         key(&mut app, KeyCode::Char('Z'));
         assert!(app.folded.is_empty());
+    }
+
+    #[test]
+    fn file_list_shows_a_preview() {
+        let picker = crate::picker::Picker::scan(std::path::Path::new("tests/fixtures")).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.start_picker(picker, false);
+        let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("▶ diagrams.md") && l.contains(" diagrams.md ")), "{s:#?}");
+        assert!(s.iter().any(|l| l.contains("Mermaid flowchart")), "{s:#?}");
+        key(&mut app, KeyCode::Char('j'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("Kitchen Sink")));
+
+        // A search hit scrolls the preview to it.
+        key(&mut app, KeyCode::Char('s'));
+        type_text(&mut app, "bananas");
+        key(&mut app, KeyCode::Enter);
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        // The list row, the status bar and the preview.
+        assert!(s.iter().filter(|l| l.contains("bananas")).count() >= 3, "{s:#?}");
+
+        // p hides it; narrow windows have none.
+        key(&mut app, KeyCode::Char('p'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(screen(&term).iter().filter(|l| l.contains("bananas")).count(), 2);
+        key(&mut app, KeyCode::Char('p'));
+        let mut small = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        small.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(screen(&small).iter().filter(|l| l.contains("bananas")).count(), 2);
     }
 
     #[test]

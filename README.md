@@ -118,6 +118,7 @@ most 8 levels deep and lists at most 5000 files.
 | `g` `G` / `Space` `b` | First / last / page down / page up |
 | `/` | Filter by name. Every word you type must appear in the path; case is ignored. `Enter` keeps the filter, `Esc` clears it. |
 | `s` | Search the text of all files. Type the text and press `Enter`. |
+| `p` | Show or hide the preview |
 | `Enter` / `o` / `l` / `→` | Open the file |
 | `q` | Quit |
 
@@ -126,6 +127,9 @@ number and the line. `Enter` opens the file at that place, with the text selecte
 so `n` and `N` go to the next matches in that file. `s` starts a new search, and `Esc` goes back
 to the file list. Like the search in a document, the search ignores case unless the text has an
 uppercase letter. It stops after 1000 lines, and it skips files larger than 4 MB.
+
+When the window is at least 90 columns wide, a preview of the selected file is shown on the
+right. In the search results, the preview shows the place of the match, with the text marked.
 
 In an open file, `Backspace` goes back through the files you reached with links, and then
 to the list or the search results. With `--watch`, each file you open from the list is watched.

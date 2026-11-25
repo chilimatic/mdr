@@ -34,6 +34,14 @@ pub enum Mode {
     Picker,
 }
 
+/// A rendered file for the preview next to the file list.
+pub struct Preview {
+    pub path: PathBuf,
+    pub width: usize,
+    pub theme: ThemeKind,
+    pub doc: Doc,
+}
+
 pub struct App {
     pub path: Option<PathBuf>,
     pub text: String,
@@ -64,6 +72,10 @@ pub struct App {
     /// Set by `e`: file and source line to open in the editor. The main loop runs it,
     /// because the editor needs the terminal.
     pub edit_request: Option<(PathBuf, usize)>,
+    /// Show a preview next to the file list (`p` turns it off and on).
+    pub preview_on: bool,
+    /// The last rendered preview.
+    pub preview: Option<Preview>,
     /// Slugs of the folded sections.
     pub folded: std::collections::HashSet<String>,
     /// Positions before jumps inside the file (links to headings, footnotes, contents).
@@ -118,6 +130,8 @@ impl App {
             ignore_changes_until: None,
             editor: None,
             key_bar: true,
+            preview_on: true,
+            preview: None,
             folded: Default::default(),
             jumps: Vec::new(),
             clipboard_request: None,
@@ -137,6 +151,26 @@ impl App {
             None if self.picker.is_some() => String::new(),
             None => "<stdin>".into(),
         }
+    }
+
+    /// Renders `path` for the preview, unless the cached one fits.
+    pub fn update_preview(&mut self, path: &Path, width: usize) {
+        if self.preview.as_ref().is_some_and(|p| p.path == path && p.width == width && p.theme == self.theme.kind) {
+            return;
+        }
+        // Large files: the start is enough for a preview.
+        const MAX: usize = 64 * 1024;
+        let mut text = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_else(|e| format!("cannot read: {e}"));
+        if text.len() > MAX {
+            let cut = text[..MAX].rfind('\n').unwrap_or(MAX);
+            text.truncate(cut);
+        }
+        let mut sizer = Images::new(None);
+        let doc = layout::render(
+            &text,
+            Ctx { width, theme: &self.theme, hl: &self.hl, base_dir: path.parent(), sizer: &mut sizer, interactive: false },
+        );
+        self.preview = Some(Preview { path: path.to_path_buf(), width, theme: self.theme.kind, doc });
     }
 
     /// Shows the file list of a folder instead of a document.
@@ -784,6 +818,10 @@ impl App {
             KeyCode::Char('s') => {
                 pk.grep = Some(Grep { editing: true, ..Grep::default() });
             }
+            KeyCode::Char('p') => {
+                self.preview_on = !self.preview_on;
+                return;
+            }
             _ => {}
         }
         pk.clamp();
@@ -841,6 +879,7 @@ impl App {
                 g.previous = std::mem::take(&mut g.query);
                 g.editing = true;
             }
+            KeyCode::Char('p') => self.preview_on = !self.preview_on,
             KeyCode::Char('j') | KeyCode::Down => g.selected = (g.selected + 1).min(last),
             KeyCode::Char('k') | KeyCode::Up => g.selected = g.selected.saturating_sub(1),
             KeyCode::Char('g') | KeyCode::Home => g.selected = 0,
