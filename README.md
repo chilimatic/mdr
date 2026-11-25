@@ -7,6 +7,8 @@ with styled text, syntax-highlighted code, tables, inline images and text-art di
 mdr README.md
 ```
 
+![mdr showing a document with a table, code, math and a flowchart](docs/screenshots/document.png)
+
 ## Features
 
 - Headings, wrapped paragraphs, nested and task lists, quotes, GitHub alerts
@@ -29,6 +31,15 @@ mdr README.md
   mdr draws images with block characters.
 - Diagrams and charts drawn as text: Mermaid, Graphviz DOT, and a simple chart format.
   See [Diagrams](#diagrams).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Flowchart](docs/screenshots/diagrams.png) | ![Class and ER diagrams](docs/screenshots/class-diagram.png) |
+| ![File list with preview](docs/screenshots/folder.png) | ![Text search across a folder](docs/screenshots/folder-search.png) |
+
+The file `docs/demo.md` shows most features on one screen: `mdr docs/demo.md`.
 
 ## Install
 
@@ -305,6 +316,8 @@ to 500 rows and 8 series.
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+The screenshots are made with `scripts/screenshots.py` (see the comment at its top).
 
 To see rendered output in the tests, set `MDR_DUMP=1`:
 
