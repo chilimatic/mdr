@@ -21,9 +21,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_keys(f, app, keys);
     }
 
-    if app.mode == Mode::Picker {
+    let help_over_files = app.mode == Mode::Help && app.help_from == Mode::Picker;
+    if app.mode == Mode::Picker || help_over_files {
         let list = draw_preview(f, app, body);
         draw_picker(f, app, list, status);
+        if help_over_files {
+            draw_help(f, app, body);
+        }
         return;
     }
     let w = app.content_width().min(body.width);
@@ -45,7 +49,7 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.mode {
         Mode::SearchInput => k.extend([("⏎", "done"), ("Esc", "cancel")]),
         Mode::Toc => k.extend([("j/k", "move"), ("⏎", "jump"), ("Esc", "close")]),
-        Mode::Help => k.push(("any key", "close")),
+        Mode::Help => k.extend([("j/k", "scroll"), ("any key", "close")]),
         Mode::Picker => match app.picker.as_ref() {
             Some(pk) => match &pk.grep {
                 Some(g) if g.editing => k.extend([("⏎", "search"), ("Esc", "cancel")]),
@@ -480,47 +484,75 @@ fn draw_toc(f: &mut Frame, app: &App, body: Rect) {
 }
 
 const HELP: &[(&str, &str)] = &[
-    ("j/k ↓/↑", "scroll line"),
-    ("d/u", "half page"),
-    ("space/b", "page down/up"),
-    ("g/G", "top/bottom"),
+    ("j/k ↓/↑", "scroll a line"),
+    ("d/u ^d/^u", "half a page"),
+    ("Space/f/PgDn", "page down (also ^f)"),
+    ("b/PgUp", "page up (also ^b)"),
+    ("g/Home G/End", "top / bottom"),
     ("h/l ←/→", "scroll sideways"),
-    ("]/[", "next/prev heading"),
+    ("]/[", "next / previous heading"),
     ("t", "table of contents"),
-    ("/", "search"),
-    ("n/N", "next/prev match"),
-    ("Tab/S-Tab", "select link"),
-    ("⏎ / o", "open link (also footnotes)"),
+    ("/", "search (^u clears, ^w deletes a word)"),
+    ("n/N", "next / previous match"),
+    ("Tab/S-Tab", "select a link"),
+    ("⏎ / o", "open the link (also footnotes)"),
     ("Backspace", "back: jump, file, file list"),
     ("y", "copy code block (again: next)"),
     ("z / Z", "fold section / all"),
-    ("T", "toggle dark/light theme"),
-    ("+/-/0", "wider/narrower/reset width"),
-    ("w", "toggle watch mode"),
-    ("r", "reload file"),
     ("e", "edit in $EDITOR at this line"),
-    ("esc", "clear search/selection"),
-    ("q", "quit"),
+    ("T", "dark / light theme"),
+    ("+ = / - / 0", "wider / narrower / default"),
+    ("w", "watch mode on / off"),
+    ("r", "reload the file"),
+    ("Esc", "clear search and selection"),
+    ("?", "this help"),
+    ("q / ^c", "quit"),
 ];
 
-fn draw_help(f: &mut Frame, app: &App, body: Rect) {
-    let w = 46.min(body.width);
-    let h = (HELP.len() as u16 + 2).min(body.height);
+const HELP_FILES: &[(&str, &str)] = &[
+    ("j/k ↓/↑", "move"),
+    ("g/G", "first / last"),
+    ("Space/b", "page down / up"),
+    ("⏎ o l →", "open the file"),
+    ("/", "filter names (⏎ keeps, Esc clears)"),
+    ("s", "search the text of all files"),
+    ("p", "preview on / off"),
+    ("Esc", "clear filter / leave search"),
+    ("Backspace", "(in a file) back to the list"),
+    ("?", "this help"),
+    ("q / ^c", "quit"),
+];
+
+const HELP_TOC: &[(&str, &str)] = &[
+    ("j/k ↓/↑", "move"),
+    ("g/G", "first / last"),
+    ("⏎", "jump to the heading"),
+    ("Esc t q", "close"),
+    ("?", "this help"),
+];
+
+fn draw_help(f: &mut Frame, app: &mut App, body: Rect) {
+    let keys = match app.help_from {
+        Mode::Picker => HELP_FILES,
+        Mode::Toc => HELP_TOC,
+        _ => HELP,
+    };
+    let w = 52.min(body.width);
+    let h = (keys.len() as u16 + 2).min(body.height);
+    let rows = h.saturating_sub(2) as usize;
+    app.help_scroll = app.help_scroll.min(keys.len().saturating_sub(rows));
     let area = Rect { x: body.x + (body.width - w) / 2, y: body.y + (body.height - h) / 2, width: w, height: h };
     f.render_widget(Clear, area);
-    let lines: Vec<Line> = HELP
+    let lines: Vec<Line> = keys
         .iter()
-        .map(|(k, d)| {
-            Line::from(vec![
-                Span::styled(format!(" {k:<12}"), app.theme.list_marker),
-                Span::raw(*d),
-            ])
-        })
+        .skip(app.help_scroll)
+        .map(|(k, d)| Line::from(vec![Span::styled(format!(" {k:<13}"), app.theme.list_marker), Span::raw(*d)]))
         .collect();
-    f.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" Keys ").border_style(app.theme.popup_border)),
-        area,
-    );
+    let mut block = Block::bordered().title(" Keys ").border_style(app.theme.popup_border);
+    if keys.len() > rows {
+        block = block.title_bottom(" j/k scroll · other keys close ");
+    }
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 #[cfg(test)]
@@ -1038,6 +1070,65 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         key(&mut app, KeyCode::Char('y'));
         assert_eq!(app.clipboard_request.as_deref(), Some("echo safe[201~\nrm -rf x"));
+    }
+
+    #[test]
+    fn help_fits_scrolls_and_follows_the_mode() {
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char('?'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("j/k scroll · other keys close")));
+        for _ in 0..30 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(screen(&term).iter().any(|l| l.contains("q / ^c")), "the last row is reachable");
+        key(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.mode, Mode::Normal);
+
+        // Every key in the README Keys table is in the help.
+        let readme = std::fs::read_to_string("README.md").unwrap();
+        for k in ["`y`", "`z`", "`e`", "`T`", "`w`", "`r`", "`t`", "`n`"] {
+            assert!(readme.contains(k));
+            let bare = k.trim_matches('`');
+            assert!(HELP.iter().any(|(keys, _)| keys.split([' ', '/']).any(|x| x == bare)), "{bare} missing in HELP");
+        }
+
+        // In the file list, ? shows the file list keys over the list.
+        let picker = crate::picker::Picker::scan(std::path::Path::new("tests/fixtures")).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.start_picker(picker, false);
+        key(&mut app, KeyCode::Char('?'));
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let s = screen(&term);
+        assert!(s.iter().any(|l| l.contains("search the text of all files")) && s.iter().any(|l| l.contains("diagrams.md")), "{s:#?}");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Picker);
+    }
+
+    #[test]
+    fn ctrl_and_alt_letters_do_not_trigger_commands() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char(']'));
+        app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
+        assert!(app.folded.is_empty() && app.edit_request.is_none() && app.mode == Mode::Normal);
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(app.scroll > 0, "Ctrl-d still pages");
+
+        // Line editing in the search input.
+        key(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "foo bar");
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.search_input, "foo ");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.search_input, "");
     }
 
     #[test]

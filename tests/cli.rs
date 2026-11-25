@@ -135,3 +135,12 @@ fn a_device_or_huge_input_is_refused() {
     assert!(ok, "{err}");
     assert!(out.contains("caf"));
 }
+
+#[test]
+fn printed_links_show_their_target() {
+    let (ok, out, _) = mdr(&["-p", "--width", "80"], Some("See [the docs](https://example.com/docs), <https://a.b/c> and [here](#top).\n"));
+    assert!(ok);
+    assert!(out.contains("the docs (https://example.com/docs)"), "{out}");
+    assert!(!out.contains("https://a.b/c (https://a.b/c)"), "{out}");
+    assert!(out.contains("here."), "{out}");
+}

@@ -110,6 +110,7 @@ pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
     opts.insert(Options::ENABLE_FOOTNOTES);
     opts.insert(Options::ENABLE_GFM);
     opts.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    opts.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     opts.insert(Options::ENABLE_MATH);
 
     let mut b = Builder::new(ctx);
@@ -392,6 +393,15 @@ struct Builder<'a> {
     table: Option<TableB>,
     image: Option<(String, String)>,
     html_block: bool,
+    /// Inside `<!-- ... -->` that spans several lines of an HTML block.
+    html_comment: bool,
+    /// An HTML block that has shown a line (comment-only blocks show nothing).
+    html_shown: bool,
+    /// A `---` / `+++` block that is not at the start of the file: shown as text, with
+    /// this delimiter.
+    meta: Option<&'static str>,
+    /// Index in `segs` where the current link text starts.
+    link_start: usize,
     footnote_label: Option<String>,
     skip: bool,
     src: usize,
@@ -413,6 +423,10 @@ impl<'a> Builder<'a> {
             table: None,
             image: None,
             html_block: false,
+            html_comment: false,
+            html_shown: false,
+            meta: None,
+            link_start: 0,
             footnote_label: None,
             skip: false,
             src: 0,
@@ -601,6 +615,12 @@ impl<'a> Builder<'a> {
             }
             return;
         }
+        if self.meta.is_some()
+            && let Event::Text(t) = &ev
+        {
+            self.raw_lines(t, self.theme().dim);
+            return;
+        }
         match ev {
             Event::Start(tag) => self.start(tag, offset),
             Event::End(tag) => self.end(tag),
@@ -647,14 +667,20 @@ impl<'a> Builder<'a> {
             }
             Event::Html(t) => {
                 if self.html_block {
-                    let t = t.trim_end_matches('\n');
-                    if !t.trim_start().starts_with("<!--") {
-                        let dim = self.theme().dim;
-                        for l in t.lines() {
-                            let mut spans = self.take_prefix();
-                            spans.push(Span::styled(l.to_string(), dim));
-                            self.push_line(spans);
+                    // pulldown-cmark sends a block line by line, so a comment can span events.
+                    let dim = self.theme().dim;
+                    for l in t.lines() {
+                        let shown = self.strip_comments(l);
+                        if shown.trim().is_empty() {
+                            continue;
                         }
+                        if !self.html_shown {
+                            self.begin_block();
+                            self.html_shown = true;
+                        }
+                        let mut spans = self.take_prefix();
+                        spans.push(Span::styled(shown, dim));
+                        self.push_line(spans);
                     }
                 }
             }
@@ -749,9 +775,11 @@ impl<'a> Builder<'a> {
                 self.code = Some((lang, String::new()));
             }
             Tag::HtmlBlock => {
+                // The block starts when it shows its first line (see `Event::Html`).
+                self.flush_inline();
                 self.src = offset;
-                self.begin_block();
                 self.html_block = true;
+                self.html_shown = false;
             }
             Tag::List(start) => {
                 let in_item = self.containers.iter().any(|c| matches!(c, Container::Item { .. }));
@@ -807,10 +835,19 @@ impl<'a> Builder<'a> {
             Tag::Link { dest_url, .. } => {
                 self.link_urls.push(dest_url.to_string());
                 self.cur_link = Some(self.link_urls.len() - 1);
+                self.link_start = self.segs.len();
                 self.styles.push(self.theme().link);
             }
             Tag::Image { dest_url, .. } => {
                 self.image = Some((dest_url.to_string(), String::new()));
+            }
+            // Front matter is hidden only at the very start of the file.
+            Tag::MetadataBlock(kind) if offset > 0 => {
+                self.src = offset;
+                self.begin_block();
+                let delim = if matches!(kind, pulldown_cmark::MetadataBlockKind::PlusesStyle) { "+++" } else { "---" };
+                self.raw_lines(delim, self.theme().dim);
+                self.meta = Some(delim);
             }
             Tag::MetadataBlock(_) => self.skip = true,
             Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {
@@ -845,7 +882,10 @@ impl<'a> Builder<'a> {
             }
             TagEnd::HtmlBlock => {
                 self.html_block = false;
-                self.need_blank = true;
+                self.html_comment = false;
+                if self.html_shown {
+                    self.need_blank = true;
+                }
             }
             TagEnd::List(_) => {
                 self.flush_inline();
@@ -889,6 +929,17 @@ impl<'a> Builder<'a> {
             }
             TagEnd::Link => {
                 self.styles.pop();
+                // Printed text cannot be clicked: show where the link goes.
+                if !self.ctx.interactive
+                    && let Some(url) = self.cur_link.map(|l| self.link_urls[l].clone())
+                {
+                    let text: String = self.segs.get(self.link_start..).unwrap_or_default().iter().map(|s| s.text.as_str()).collect();
+                    let bare = url.strip_prefix("mailto:").unwrap_or(&url);
+                    if !url.is_empty() && !url.starts_with('#') && text.trim() != bare {
+                        let style = self.theme().dim;
+                        self.segs.push(Seg::new(format!(" ({url})"), style, None));
+                    }
+                }
                 self.cur_link = None;
             }
             TagEnd::Image => {
@@ -896,7 +947,12 @@ impl<'a> Builder<'a> {
                     self.end_image(url, alt);
                 }
             }
-            TagEnd::MetadataBlock(_) => {}
+            TagEnd::MetadataBlock(_) => {
+                if let Some(delim) = self.meta.take() {
+                    self.raw_lines(delim, self.theme().dim);
+                    self.need_blank = true;
+                }
+            }
             TagEnd::DefinitionList | TagEnd::DefinitionListTitle | TagEnd::DefinitionListDefinition => {
                 self.flush_inline();
                 self.need_blank = true;
@@ -905,6 +961,44 @@ impl<'a> Builder<'a> {
     }
 
     // -- block emitters -----------------------------------------------------
+
+    /// Lines of text as they are, one rendered line each.
+    fn raw_lines(&mut self, text: &str, style: Style) {
+        for l in text.lines() {
+            let mut spans = self.take_prefix();
+            spans.push(Span::styled(l.to_string(), style));
+            self.push_line(spans);
+        }
+    }
+
+    /// The part of an HTML line outside `<!-- ... -->`, tracking comments across lines.
+    fn strip_comments(&mut self, line: &str) -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        loop {
+            if self.html_comment {
+                match rest.find("-->") {
+                    Some(k) => {
+                        self.html_comment = false;
+                        rest = &rest[k + 3..];
+                    }
+                    None => return out,
+                }
+            } else {
+                match rest.find("<!--") {
+                    Some(k) => {
+                        out.push_str(&rest[..k]);
+                        self.html_comment = true;
+                        rest = &rest[k + 4..];
+                    }
+                    None => {
+                        out.push_str(rest);
+                        return out;
+                    }
+                }
+            }
+        }
+    }
 
     /// The `[^label]: ` in front of a footnote, linking back to where it is used.
     fn push_footnote_label(&mut self) {
@@ -1247,6 +1341,25 @@ mod tests {
         assert!(doc.lines.iter().all(|l| l.spans.iter().filter(|s| s.content.starts_with('│')).count() <= MAX_NEST));
         let md = format!("{}- deep item\n", (0..200).map(|i| format!("{}- l{i}\n", "  ".repeat(i))).collect::<String>());
         assert!(doc_of(&md, 60).width <= 60);
+    }
+
+    #[test]
+    fn html_comments_are_hidden_across_lines() {
+        let out = plain("Before\n\n<!--\nTODO: secret note\nsecond line\n-->\n\nAfter\n", 40);
+        assert_eq!(out, ["Before", "", "After"]);
+        let out = plain("A\n\n<!-- one line -->\n\nB\n", 40);
+        assert_eq!(out, ["A", "", "B"]);
+        let out = plain("<div>kept <!-- gone --> too</div>\n", 40);
+        assert_eq!(out, ["<div>kept  too</div>"]);
+    }
+
+    #[test]
+    fn metadata_is_hidden_only_at_the_start() {
+        assert_eq!(plain("---\ntitle: x\n---\n\n# Body\n", 40)[0], "Body");
+        assert_eq!(plain("+++\ntitle = \"x\"\n+++\n\nBody\n", 40), ["Body"]);
+        let out = plain("# Title\n\n---\nnot: frontmatter\n---\n\ntext\n", 40);
+        assert!(out.iter().any(|l| l == "not: frontmatter"), "{out:#?}");
+        assert!(out.iter().any(|l| l == "text"));
     }
 
     #[test]

@@ -12,7 +12,9 @@ mdr README.md
 ## Features
 
 - Headings, wrapped paragraphs, nested and task lists, quotes, GitHub alerts
-  (`> [!NOTE]`), tables with column alignment, footnotes. Front matter is hidden.
+  (`> [!NOTE]`), tables with column alignment, footnotes. Front matter (`---` YAML or
+  `+++` TOML) at the start of the file is hidden. HTML is shown as source, dimmed, without
+  `<!-- comments -->`.
 - Code blocks with syntax highlighting. `y` copies a code block to the clipboard.
 - Math: `$E = mc^2$` and `$$...$$` blocks are shown as Unicode text (E = mc²).
 - Fold sections with `z` to see the outline of a long document.
@@ -163,6 +165,7 @@ mdr --print notes.md                   # print to the terminal, with colors
   `NO_COLOR` environment variable is not set.
 - Width: `--width` if you give it, otherwise the terminal width (at most 100), otherwise 80.
 - Images print as their alt text. Diagrams print as text art, at full width.
+- Links print as their text followed by the target: `the docs (https://example.com/docs)`.
 - `--watch` does not work in this mode, and you cannot print a folder.
 
 ## Keys

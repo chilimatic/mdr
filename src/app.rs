@@ -80,6 +80,9 @@ pub struct App {
     pub preview_on: bool,
     /// The last rendered preview.
     pub preview: Option<Preview>,
+    /// The mode the help was opened from, and how far it is scrolled.
+    pub help_from: Mode,
+    pub help_scroll: usize,
     /// Slugs of the folded sections.
     pub folded: std::collections::HashSet<String>,
     /// Positions before jumps inside the file (links to headings, footnotes, contents).
@@ -135,6 +138,8 @@ impl App {
             editor: None,
             key_bar: true,
             preview_on: true,
+            help_from: Mode::Normal,
+            help_scroll: 0,
             preview: None,
             folded: Default::default(),
             jumps: Vec::new(),
@@ -779,14 +784,28 @@ impl App {
     // -- input --------------------------------------------------------------
 
     pub fn on_key(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+        // Outside text input, letters with Ctrl or Alt do nothing (Ctrl-z must not fold),
+        // except the page keys Ctrl-d/u/f/b.
+        let typing = self.mode == Mode::SearchInput
+            || self.picker.as_ref().is_some_and(|pk| self.mode == Mode::Picker && (pk.filtering || pk.grep.as_ref().is_some_and(|g| g.editing)));
+        let page_key = self.mode == Mode::Normal && matches!(key.code, KeyCode::Char('d' | 'u' | 'f' | 'b'));
+        if !typing && (alt || (ctrl && !page_key)) {
             return;
         }
         match self.mode {
             Mode::SearchInput => self.key_search(key),
             Mode::Toc => self.key_toc(key),
-            Mode::Help => self.mode = Mode::Normal,
+            Mode::Help => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => self.help_scroll += 1,
+                KeyCode::Char('k') | KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                _ => self.mode = self.help_from,
+            },
             Mode::Normal => self.key_normal(key),
             Mode::Picker => self.key_picker(key),
         }
@@ -806,16 +825,19 @@ impl App {
                     self.set_message(format!("no matches for \"{}\"", self.search_input));
                 }
             }
-            KeyCode::Backspace => {
-                self.search_input.pop();
-                self.update_search();
+            _ => {
+                if edit_text(&mut self.search_input, key) {
+                    self.update_search();
+                }
             }
-            KeyCode::Char(c) => {
-                self.search_input.push(c);
-                self.update_search();
-            }
-            _ => {}
         }
+    }
+
+    /// Shows the keys of the current mode.
+    fn open_help(&mut self) {
+        self.help_from = self.mode;
+        self.help_scroll = 0;
+        self.mode = Mode::Help;
     }
 
     fn key_picker(&mut self, key: KeyEvent) {
@@ -834,16 +856,13 @@ impl App {
                     pk.filtering = false;
                 }
                 KeyCode::Enter => pk.filtering = false,
-                KeyCode::Backspace => {
-                    pk.filter.pop();
-                }
-                KeyCode::Char(c) => {
-                    pk.filter.push(c);
-                    pk.selected = 0;
-                }
                 KeyCode::Down => pk.selected += 1,
                 KeyCode::Up => pk.selected = pk.selected.saturating_sub(1),
-                _ => {}
+                _ => {
+                    if edit_text(&mut pk.filter, key) {
+                        pk.selected = 0;
+                    }
+                }
             }
             pk.clamp();
             return;
@@ -851,6 +870,10 @@ impl App {
         let page = self.view_height.max(2) - 1;
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => {
+                self.open_help();
+                return;
+            }
             KeyCode::Esc => pk.filter.clear(),
             KeyCode::Char('/') => {
                 pk.filtering = true;
@@ -918,17 +941,16 @@ impl App {
                     g.selected = 0;
                     g.editing = false;
                 }
-                KeyCode::Backspace => {
-                    g.query.pop();
+                _ => {
+                    edit_text(&mut g.query, key);
                 }
-                KeyCode::Char(c) => g.query.push(c),
-                _ => {}
             }
             return;
         }
         let last = g.hits.len().saturating_sub(1);
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => pk.grep = None,
             KeyCode::Char('s') | KeyCode::Char('/') => {
                 g.previous = std::mem::take(&mut g.query);
@@ -956,6 +978,7 @@ impl App {
         let n = self.doc.headings.len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.mode = Mode::Normal,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Down | KeyCode::Char('j') if n > 0 => self.toc_selected = (self.toc_selected + 1).min(n - 1),
             KeyCode::Up | KeyCode::Char('k') => self.toc_selected = self.toc_selected.saturating_sub(1),
             KeyCode::Home | KeyCode::Char('g') => self.toc_selected = 0,
@@ -1036,7 +1059,7 @@ impl App {
                 Some(p) => self.edit_request = Some((p, self.top_source_line())),
                 None => self.set_message("cannot edit stdin"),
             },
-            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') => self.open_help(),
             _ => {}
         }
     }
@@ -1153,6 +1176,32 @@ fn editor_program(cmd: &str) -> &str {
     match cmd.chars().next() {
         Some(q @ ('"' | '\'')) => cmd[1..].split(q).next().unwrap_or(""),
         _ => cmd.split_whitespace().next().unwrap_or(""),
+    }
+}
+
+/// Line editing for the text inputs: typing, Backspace, Ctrl-u (clear) and Ctrl-w
+/// (delete a word). Returns true if the text changed.
+fn edit_text(s: &mut String, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Backspace => s.pop().is_some(),
+        KeyCode::Char('u') if ctrl => {
+            let had = !s.is_empty();
+            s.clear();
+            had
+        }
+        KeyCode::Char('w') if ctrl => {
+            let keep = s.trim_end().rfind(' ').map_or(0, |i| i + 1);
+            let had = keep < s.len();
+            s.truncate(keep);
+            had
+        }
+        KeyCode::Char(c) if !ctrl && !alt => {
+            s.push(c);
+            true
+        }
+        _ => false,
     }
 }
 
