@@ -9,6 +9,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Mode};
+use crate::text::clean_line;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -264,7 +265,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    let name = format!(" {} ", app.file_name());
+    // File names and link targets come from the document's folder: no bidi tricks.
+    let name = format!(" {} ", clean_line(&app.file_name()));
+    let middle = clean_line(&middle).into_owned();
     let left_w = name.width() + 1;
     let room = (area.width as usize).saturating_sub(left_w + right_w + 1);
     let mut used = 0;
@@ -306,9 +309,9 @@ fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
                 let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let mut spans = Vec::new();
                 if let Some(d) = dir {
-                    spans.push(Span::styled(format!("{d}/"), theme.dim));
+                    spans.push(Span::styled(format!("{}/", clean_line(&d)), theme.dim));
                 }
-                spans.push(Span::styled(name, theme.text));
+                spans.push(Span::styled(clean_line(&name).into_owned(), theme.text));
                 ListItem::new(Line::from(spans))
             })
             .collect()
@@ -393,7 +396,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, body: Rect) -> Rect {
         })
         .collect();
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let block = Block::bordered().title(format!(" {name} ")).border_style(theme.popup_border);
+    let block = Block::bordered().title(format!(" {} ", clean_line(&name))).border_style(theme.popup_border);
     f.render_widget(Paragraph::new(lines).block(block.padding(ratatui::widgets::Padding::horizontal(1))), right);
     list
 }
@@ -412,11 +415,11 @@ fn draw_grep(f: &mut Frame, app: &App, pk: &crate::picker::Picker, g: &crate::gr
                 let found: String = h.text.chars().skip(h.start).take(h.end - h.start).collect();
                 let after: String = h.text.chars().skip(h.end).collect();
                 ListItem::new(Line::from(vec![
-                    Span::styled(name.into_owned(), theme.list_marker),
+                    Span::styled(clean_line(&name).into_owned(), theme.list_marker),
                     Span::styled(format!(":{}  ", h.line), theme.dim),
-                    Span::styled(before, theme.text),
-                    Span::styled(found, theme.search_match),
-                    Span::styled(after, theme.text),
+                    Span::styled(clean_line(&before).into_owned(), theme.text),
+                    Span::styled(clean_line(&found).into_owned(), theme.search_match),
+                    Span::styled(clean_line(&after).into_owned(), theme.text),
                 ]))
             })
             .collect()
@@ -1012,6 +1015,29 @@ mod tests {
         app.update_preview(&dir.join("big.md"), 60);
         assert!(app.preview.as_ref().unwrap().doc.lines[0].plain.contains("Changed now"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn untrusted_links_are_not_handed_to_the_desktop() {
+        let md = "[a](file:///etc/passwd) [b](javascript:alert) [c](setup.jar) [d](vscode://x) [e](foo.jar?://)\n";
+        let mut app = App::new(Some("tests/fixtures/x.md".into()), md.into(), ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        for _ in 0..5 {
+            key(&mut app, KeyCode::Tab);
+            key(&mut app, KeyCode::Enter);
+            let msg = app.message.as_ref().map(|m| m.0.clone()).unwrap_or_default();
+            assert!(msg.starts_with("not opened"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn copied_code_has_no_escape_sequences() {
+        let mut app = App::new(None, "```sh\necho safe\x1b[201~\nrm -rf x\n```\n".into(), ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.clipboard_request.as_deref(), Some("echo safe[201~\nrm -rf x"));
     }
 
     #[test]

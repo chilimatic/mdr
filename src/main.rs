@@ -11,11 +11,12 @@ mod picker;
 mod positions;
 mod print;
 mod search;
+mod text;
 mod theme;
 mod ui;
 mod watch;
 
-use std::io::{IsTerminal, Read};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -122,13 +123,14 @@ fn main() -> Result<()> {
         if std::io::stdin().is_terminal() {
             bail!("no input: give a markdown file, or pipe markdown into stdin (see --help)");
         }
-        let mut text = String::new();
-        std::io::stdin().read_to_string(&mut text).context("cannot read stdin")?;
-        (None, text)
+        let loaded = text::read_limited(std::io::stdin().lock()).context("cannot read stdin")?;
+        warn_lossy(&loaded, "stdin");
+        (None, loaded.text)
     } else {
         let path = args.file.clone().unwrap();
-        let text = std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
-        (Some(path), text)
+        let loaded = text::read_file(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        warn_lossy(&loaded, &path.display().to_string());
+        (Some(path), loaded.text)
     };
     let stdout_tty = std::io::stdout().is_terminal();
     if set.print || !stdout_tty {
@@ -145,6 +147,12 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, set, path, text, from_stdin, None);
     ratatui::restore();
     result
+}
+
+fn warn_lossy(loaded: &text::Loaded, name: &str) {
+    if loaded.lossy {
+        eprintln!("mdr: {name} is not valid UTF-8; bad bytes are shown as \u{FFFD}");
+    }
 }
 
 fn run_folder(set: Settings, dir: PathBuf) -> Result<()> {

@@ -65,15 +65,35 @@ impl Positions {
         entries.truncate(MAX_ENTRIES);
         let text: String = entries.iter().map(|((n, r), p)| format!("{n}\t{r}\t{p}\n")).collect();
         let Some(dir) = self.file.parent() else { return };
-        if std::fs::create_dir_all(dir).is_err() {
+        // The file lists every document the user read: keep it private.
+        if private_dir(dir).is_err() {
             return;
         }
         // Write a new file and rename it, so a crash never leaves half a file.
         let tmp = self.file.with_extension(format!("tmp{}", std::process::id()));
-        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &self.file).is_err() {
+        if private_write(&tmp, text.as_bytes()).is_ok() && std::fs::rename(&tmp, &self.file).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
     }
+}
+
+/// Creates the folder (and parents) with mode 0700 on Unix.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(dir)
+}
+
+/// Writes a new file with mode 0600 on Unix.
+fn private_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)?.write_all(data)
 }
 
 #[cfg(test)]
@@ -97,6 +117,12 @@ mod tests {
         pos.set(b, None);
         assert_eq!(pos.get(b), None);
         assert_eq!(pos.get(Path::new("does/not/exist.md")), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("state/positions")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

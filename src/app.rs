@@ -16,6 +16,7 @@ use crate::layout::{self, Ctx, Doc};
 use crate::picker::Picker;
 use crate::positions::Positions;
 use crate::search::{self, Search};
+use crate::text;
 use crate::theme::{Theme, ThemeKind};
 use crate::ui;
 use crate::watch::{self, Watcher};
@@ -169,7 +170,9 @@ impl App {
         // Large files: the start is enough for a preview. Read only that much.
         const MAX: u64 = 64 * 1024;
         let mut buf = Vec::new();
-        let read = std::fs::File::open(path).and_then(|f| std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX + 1), &mut buf));
+        let read = (if text::is_regular_file(path) { Ok(()) } else { Err(std::io::Error::other("not a regular file")) })
+            .and_then(|_| std::fs::File::open(path))
+            .and_then(|f| std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX + 1), &mut buf));
         let text = match read {
             Ok(_) => {
                 if buf.len() as u64 > MAX {
@@ -177,7 +180,7 @@ impl App {
                     let cut = buf.iter().rposition(|&b| b == b'\n').unwrap_or(buf.len());
                     buf.truncate(cut);
                 }
-                String::from_utf8_lossy(&buf).into_owned()
+                text::decode(buf).text
             }
             Err(e) => format!("cannot read: {e}"),
         };
@@ -301,9 +304,12 @@ impl App {
     /// Reads the file again. Keeps the reader at the same heading if it still exists.
     pub fn reload(&mut self) {
         let Some(path) = self.path.clone() else { return };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            self.set_message("reload failed: cannot read file");
-            return;
+        let text = match text::read_file(&path) {
+            Ok(l) => l.text,
+            Err(e) => {
+                self.set_message(format!("reload failed: {e}"));
+                return;
+            }
         };
         let anchor = self
             .doc
@@ -335,13 +341,16 @@ impl App {
 
     /// Returns false if the file cannot be read; the current document stays.
     fn open_file(&mut self, path: PathBuf, anchor: Option<&str>) -> bool {
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
+        let (text, lossy) = match text::read_file(&path) {
+            Ok(l) => (l.text, l.lossy),
             Err(e) => {
                 self.set_message(format!("cannot open {}: {e}", path.display()));
                 return false;
             }
         };
+        if lossy {
+            self.set_message("not valid UTF-8: bad bytes are shown as \u{FFFD}");
+        }
         self.save_position();
         if let Some(cur) = self.path.take() {
             self.history.push((cur, self.anchor().unwrap_or((0, 0))));
@@ -474,7 +483,7 @@ impl App {
             }
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = text::read_file(&path).map(|l| l.text) else {
             self.set_message("cannot read previous file");
             return;
         };
@@ -614,7 +623,8 @@ impl App {
         let start: String = c.text.lines().next().unwrap_or("").trim().chars().take(30).collect();
         let more = if visible.len() > 1 { " · y: next block" } else { "" };
         let msg = format!("copied {what} ({lines} lines): {start}{more}");
-        self.clipboard_request = Some(c.text.clone());
+        // No escape sequences on the clipboard: they would run when pasted into a shell.
+        self.clipboard_request = Some(text::clean_block(&c.text));
         self.set_message(msg);
     }
 
@@ -669,9 +679,20 @@ impl App {
             self.jump_to_anchor(anchor);
             return;
         }
-        if url.contains("://") || url.starts_with("mailto:") {
-            self.spawn_open(&url);
-            return;
+        // A scheme is the part before the first ':' if no '/' comes earlier.
+        let scheme = url.split_once(':').filter(|(s, _)| !s.contains('/') && !s.is_empty()).map(|(s, _)| s.to_ascii_lowercase());
+        match scheme.as_deref() {
+            Some("http" | "https" | "mailto") => {
+                self.spawn_open(&url);
+                return;
+            }
+            // file:, javascript:, smb:, custom app schemes: an untrusted document must not
+            // hand them to the desktop.
+            Some(s) => {
+                self.set_message(format!("not opened: {s}: links are not followed (only http, https, mailto)"));
+                return;
+            }
+            None => {}
         }
         let (file, anchor) = match url.split_once('#') {
             Some((f, a)) => (f, Some(a)),
@@ -686,10 +707,16 @@ impl App {
         let is_md = target
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
+        // Other local files go to the desktop only when they are plain documents or
+        // images: a link to a .jar, .exe or .desktop file in a cloned repo could run code.
+        const SAFE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "pdf", "txt"];
+        let safe = target.extension().and_then(|e| e.to_str()).is_some_and(|e| SAFE.contains(&e.to_ascii_lowercase().as_str()));
         if is_md {
             self.open_file(target, anchor);
-        } else {
+        } else if safe && text::is_regular_file(&target) {
             self.spawn_open(&target.to_string_lossy());
+        } else {
+            self.set_message(format!("not opened: {} (only markdown, images, pdf and txt)", target.display()));
         }
     }
 

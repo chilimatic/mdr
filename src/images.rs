@@ -14,7 +14,8 @@ pub struct Images {
     /// Largest image height in rows. Set from the terminal height.
     pub max_rows: u16,
     dims: HashMap<PathBuf, Option<(u32, u32)>>,
-    encoded: HashMap<(PathBuf, u16, u16), Option<SlicedProtocol>>,
+    /// One encoded image per file, for the last size asked for (sixel and kitty data is large).
+    encoded: HashMap<PathBuf, (u16, u16, Option<SlicedProtocol>)>,
 }
 
 impl Images {
@@ -31,14 +32,32 @@ impl Images {
     /// Returns the encoded image for this size. Decodes and encodes it on first use.
     pub fn protocol(&mut self, path: &Path, cols: u16, rows: u16) -> Option<&SlicedProtocol> {
         let picker = self.picker.as_ref()?;
-        self.encoded
-            .entry((path.to_path_buf(), cols, rows))
-            .or_insert_with(|| {
-                let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-                SlicedProtocol::new(picker, img, Some(Size::new(cols, rows))).ok()
-            })
-            .as_ref()
+        let stale = self.encoded.get(path).is_none_or(|(c, r, _)| (*c, *r) != (cols, rows));
+        if stale {
+            let proto = decode(path).and_then(|img| SlicedProtocol::new(picker, img, Some(Size::new(cols, rows))).ok());
+            self.encoded.insert(path.to_path_buf(), (cols, rows, proto));
+        }
+        self.encoded.get(path).and_then(|(_, _, p)| p.as_ref())
     }
+}
+
+/// Largest image mdr decodes, in pixels per side, and the memory the decoder may use.
+const MAX_SIDE: u32 = 8192;
+const MAX_ALLOC: u64 = 128 << 20;
+
+/// Decodes a regular image file with size limits, so a small file that claims a huge
+/// size cannot use gigabytes of memory.
+fn decode(path: &Path) -> Option<image::DynamicImage> {
+    if !crate::text::is_regular_file(path) {
+        return None;
+    }
+    let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(MAX_ALLOC);
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 impl ImageSizer for Images {
@@ -47,7 +66,11 @@ impl ImageSizer for Images {
         let (w, h) = (*self
             .dims
             .entry(path.to_path_buf())
-            .or_insert_with(|| image::image_dimensions(path).ok()))?;
+            .or_insert_with(|| {
+                // Too large to decode: the alt text is shown instead.
+                let d = crate::text::is_regular_file(path).then(|| image::image_dimensions(path).ok()).flatten()?;
+                (d.0 <= MAX_SIDE && d.1 <= MAX_SIDE).then_some(d)
+            }))?;
         if w == 0 || h == 0 {
             return None;
         }

@@ -38,13 +38,14 @@ fn write_lines(doc: &Doc, color: bool, out: &mut impl Write) -> io::Result<()> {
                     out.write_all(sgr(span.style).as_bytes())?;
                     current = span.style;
                 }
-                out.write_all(span.content.as_bytes())?;
+                // Layout already cleans the text; this keeps the output safe on its own.
+                out.write_all(crate::text::clean_line(&span.content).as_bytes())?;
             }
             if current != Style::default() {
                 out.write_all(b"\x1b[0m")?;
             }
         } else {
-            out.write_all(line.plain.trim_end().as_bytes())?;
+            out.write_all(crate::text::clean_line(line.plain.trim_end()).as_bytes())?;
         }
         out.write_all(b"\n")?;
     }

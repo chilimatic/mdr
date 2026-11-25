@@ -63,10 +63,11 @@ pub fn search(root: &Path, files: &[PathBuf], query: &str) -> (Vec<Hit>, bool) {
     let q_str: String = q.iter().collect();
     for (fi, rel) in files.iter().enumerate() {
         let path = root.join(rel);
-        if std::fs::metadata(&path).map_or(true, |m| m.len() > MAX_FILE_BYTES) {
+        // Only regular files: a symlink to /dev/zero reports size 0.
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = crate::text::read_file(&path).map(|l| l.text) else { continue };
         // Most files do not match: check the whole file once first.
         let found = if case_sensitive { text.contains(query) } else { text.chars().map(norm).collect::<String>().contains(&q_str) };
         if !found {

@@ -106,3 +106,32 @@ fn prints_completions_and_man_page() {
     let (ok, out, _) = mdr(&["--man"], None);
     assert!(ok && out.contains(".TH mdr"), "{out}");
 }
+
+#[test]
+fn escape_sequences_in_the_document_never_reach_the_terminal() {
+    let md = "# Title \x1b]0;PWNED\x07\n\nText \x1b[2J \x1b]52;c;ZWNobw==\x07 \u{9b}31m \x1bP1$qm\x1b\\ x\u{202E}y\n\n```\ncode \x1b]0;T2\x07\n```\n\n| a\x1b[31m | b |\n|---|---|\n| $x\x1b]0;M\x07$ | c |\n";
+    for args in [&["-p", "--color", "never"][..], &["-p", "--color", "always"][..]] {
+        let (ok, out, err) = mdr(args, Some(md));
+        assert!(ok, "{err}");
+        // The only ESC allowed is the start of mdr's own color codes: ESC [ digits ; m
+        let bytes = out.as_bytes();
+        for (i, _) in out.match_indices('\x1b') {
+            let rest = &bytes[i + 1..];
+            assert!(rest.starts_with(b"[0") , "foreign escape at {i}: {:?}", &out[i..(i + 12).min(out.len())]);
+        }
+        assert!(!out.contains('\u{9b}') && !out.contains('\u{202E}') && !out.contains('\x07'));
+        assert!(out.contains("Title ␛]0;PWNED"), "{out}");
+    }
+}
+
+#[test]
+fn a_device_or_huge_input_is_refused() {
+    #[cfg(unix)]
+    {
+        let (ok, _, err) = mdr(&["/dev/zero"], None);
+        assert!(!ok && err.contains("not a regular file"), "{err}");
+    }
+    let (ok, out, err) = mdr(&["-p"], Some("caf\u{FEFF}"));
+    assert!(ok, "{err}");
+    assert!(out.contains("caf"));
+}

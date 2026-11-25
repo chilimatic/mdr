@@ -15,6 +15,11 @@ use crate::theme::Theme;
 
 /// Narrowest text column we lay out into, even inside deep nesting.
 const MIN_WIDTH: usize = 8;
+/// Deepest nesting of quotes and lists that is indented.
+const MAX_NEST: usize = 12;
+/// Larger code blocks, or blocks with longer lines, are shown without highlighting.
+const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
+const MAX_HIGHLIGHT_LINE: usize = 4096;
 
 pub struct Line {
     pub spans: Vec<Span<'static>>,
@@ -429,15 +434,34 @@ impl<'a> Builder<'a> {
 
     // -- prefixes -----------------------------------------------------------
 
+    fn container_width(c: &Container) -> usize {
+        match c {
+            Container::Quote => 2,
+            Container::List { .. } => 0,
+            Container::Item { width, .. } => *width,
+        }
+    }
+
+    /// How many containers get a prefix: at most `MAX_NEST`, and never so many that the
+    /// text column gets narrower than `MIN_WIDTH`. Deeper nesting is not indented further,
+    /// so a document with thousands of nested quotes cannot blow up the output.
+    fn shown_containers(&self) -> usize {
+        let room = self.ctx.width.saturating_sub(MIN_WIDTH);
+        let mut used = 0;
+        let mut n = 0;
+        for c in self.containers.iter().take(MAX_NEST) {
+            let w = Self::container_width(c);
+            if used + w > room {
+                break;
+            }
+            used += w;
+            n += 1;
+        }
+        n
+    }
+
     fn prefix_width(&self) -> usize {
-        self.containers
-            .iter()
-            .map(|c| match c {
-                Container::Quote => 2,
-                Container::List { .. } => 0,
-                Container::Item { width, .. } => *width,
-            })
-            .sum()
+        self.containers.iter().take(self.shown_containers()).map(Self::container_width).sum()
     }
 
     fn avail(&self) -> usize {
@@ -451,8 +475,16 @@ impl<'a> Builder<'a> {
     /// Builds the prefix for the next line. A pending list marker is used once and then cleared.
     fn take_prefix(&mut self) -> Vec<Span<'static>> {
         let bar = self.theme().quote_bar;
+        let shown = self.shown_containers();
         let mut out = Vec::new();
-        for c in &mut self.containers {
+        for (i, c) in self.containers.iter_mut().enumerate() {
+            if i >= shown {
+                // Not drawn; a pending marker is used up all the same.
+                if let Container::Item { pending, .. } = c {
+                    *pending = false;
+                }
+                continue;
+            }
             match c {
                 Container::Quote => out.push(Span::styled("│ ", bar)),
                 Container::List { .. } => {}
@@ -475,7 +507,7 @@ impl<'a> Builder<'a> {
     fn blank_prefix(&self) -> Vec<Span<'static>> {
         let bar = self.theme().quote_bar;
         let mut out = Vec::new();
-        for c in &self.containers {
+        for c in self.containers.iter().take(self.shown_containers()) {
             match c {
                 Container::Quote => out.push(Span::styled("│", bar)),
                 Container::Item { width, .. } => out.push(Span::raw(" ".repeat(*width))),
@@ -491,7 +523,13 @@ impl<'a> Builder<'a> {
 
     // -- line output --------------------------------------------------------
 
-    fn push_line(&mut self, spans: Vec<Span<'static>>) -> usize {
+    fn push_line(&mut self, mut spans: Vec<Span<'static>>) -> usize {
+        // Document text must never carry escape sequences or bidi controls to the terminal.
+        for s in &mut spans {
+            if let std::borrow::Cow::Owned(clean) = crate::text::clean_line(&s.content) {
+                s.content = clean.into();
+            }
+        }
         let plain: String = spans.iter().map(|s| s.content.as_ref()).collect();
         self.doc.lines.push(Line { spans, plain, src: self.src });
         self.doc.lines.len() - 1
@@ -978,10 +1016,10 @@ impl<'a> Builder<'a> {
         let bg = self.ctx.hl.background(theme_syntax).unwrap_or(Color::Reset);
         let body = body.replace('\t', "    ");
         let body = body.strip_suffix('\n').unwrap_or(&body);
-        let lines: Vec<Vec<(String, Style)>> = self
-            .ctx
-            .hl
-            .highlight(body, lang, theme_syntax)
+        let highlight = body.len() <= MAX_HIGHLIGHT_BYTES && body.lines().all(|l| l.len() <= MAX_HIGHLIGHT_LINE);
+        let lines: Vec<Vec<(String, Style)>> = highlight
+            .then(|| self.ctx.hl.highlight(body, lang, theme_syntax))
+            .flatten()
             .unwrap_or_else(|| body.lines().map(|l| vec![(l.to_string(), self.theme().text)]).collect());
         let w = self.avail();
         let inner = w.saturating_sub(4).max(1);
@@ -1199,6 +1237,16 @@ mod tests {
         let d = out.iter().find(|l| l.contains('α')).unwrap();
         assert_eq!(d.trim(), "α ≤ β");
         assert_eq!(d.find('α'), Some((30 - 5) / 2), "{d:?}");
+    }
+
+    #[test]
+    fn deep_nesting_is_capped() {
+        let md = format!("{}start\n{}", "> ".repeat(4000), "abcdefghij klmnopqrst uvwxyz\n".repeat(50));
+        let doc = doc_of(&md, 60);
+        assert!(doc.width <= 60, "width {}", doc.width);
+        assert!(doc.lines.iter().all(|l| l.spans.iter().filter(|s| s.content.starts_with('│')).count() <= MAX_NEST));
+        let md = format!("{}- deep item\n", (0..200).map(|i| format!("{}- l{i}\n", "  ".repeat(i))).collect::<String>());
+        assert!(doc_of(&md, 60).width <= 60);
     }
 
     #[test]
