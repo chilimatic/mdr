@@ -26,10 +26,10 @@ fn main() {
 }
 ```
 
-Euler's identity is $e^{i\pi} + 1 = 0$, and the Gaussian integral is
+Pythagoras says $a^2 + b^2 = c^2$, and Gauss added the numbers up to $n$:
 
 $$
-\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+\sum_{i=1}^{n} i = \frac{n(n+1)}{2}
 $$
 
 ## Diagrams

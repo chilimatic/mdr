@@ -192,7 +192,7 @@ impl App {
         let mut sizer = Images::new(None);
         let doc = layout::render(
             &text,
-            Ctx { width, theme: &self.theme, hl: &self.hl, base_dir: path.parent(), sizer: &mut sizer, interactive: false },
+            Ctx { width, theme: &self.theme, hl: &self.hl, base_dir: path.parent(), sizer: &mut sizer, interactive: false, link_targets: false },
         );
         self.preview = Some(Preview { path: path.to_path_buf(), stamp, width, theme: self.theme.kind, doc });
     }
@@ -272,6 +272,7 @@ impl App {
                 base_dir: base_dir.as_deref(),
                 sizer: &mut self.images,
                 interactive: true,
+                link_targets: false,
             },
         );
         layout::fold(&mut self.doc, &self.folded, self.theme.dim, width);

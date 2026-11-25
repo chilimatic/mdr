@@ -17,7 +17,7 @@ pub fn render(text: &str, path: Option<&Path>, theme: &Theme, width: usize) -> D
     let mut sizer = Images::new(None);
     layout::render(
         text,
-        Ctx { width, theme, hl: &hl, base_dir: path.and_then(Path::parent), sizer: &mut sizer, interactive: false },
+        Ctx { width, theme, hl: &hl, base_dir: path.and_then(Path::parent), sizer: &mut sizer, interactive: false, link_targets: true },
     )
 }
 

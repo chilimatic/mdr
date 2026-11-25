@@ -1,6 +1,7 @@
 //! Copies text to the system clipboard.
 //!
-//! With a graphical session, mdr uses `wl-copy`, `xclip` or `xsel`. Otherwise (for
+//! On macOS mdr uses `pbcopy`. With a graphical session on Linux, it uses `wl-copy`,
+//! `xclip` or `xsel`. Otherwise (for
 //! example over ssh) it asks the terminal with the OSC 52 escape sequence.
 
 use std::io::Write;
@@ -10,6 +11,9 @@ use std::process::{Command, Stdio};
 pub fn copy(text: &str) -> std::io::Result<&'static str> {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
     let mut tools: Vec<(&'static str, &[&str])> = Vec::new();
+    if cfg!(target_os = "macos") {
+        tools.push(("pbcopy", &[]));
+    }
     if set("WAYLAND_DISPLAY") {
         tools.push(("wl-copy", &[]));
     }
@@ -42,6 +46,7 @@ pub fn copy(text: &str) -> std::io::Result<&'static str> {
         return Ok(match tool {
             "wl-copy" => "via wl-copy",
             "xclip" => "via xclip",
+            "pbcopy" => "via pbcopy",
             _ => "via xsel",
         });
     }

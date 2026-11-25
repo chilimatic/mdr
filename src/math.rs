@@ -250,7 +250,17 @@ impl P<'_> {
 /// Wraps a fraction part or root in parentheses when it has an operator or a space.
 fn paren(s: &str) -> String {
     let s = s.trim();
-    if s.chars().any(|c| " +-−=/·×±,<>≤≥".contains(c)) { format!("({s})") } else { s.to_string() }
+    // Only operators outside brackets count: n(n+1) needs no more parentheses.
+    let mut depth = 0i32;
+    let top_level_op = s.chars().any(|c| {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+        depth == 0 && " +-−=/·×±,<>≤≥".contains(c)
+    });
+    if top_level_op { format!("({s})") } else { s.to_string() }
 }
 
 fn accent(s: &str, mark: char) -> String {
@@ -481,6 +491,7 @@ mod tests {
     fn fractions_roots_and_sets() {
         assert_eq!(t(r"\frac{1}{2}"), "1/2");
         assert_eq!(t(r"\frac{a+b}{c}"), "(a+b)/c");
+        assert_eq!(t(r"\frac{n(n+1)}{2}"), "n(n+1)/2");
         assert_eq!(t(r"\sqrt{x^2 + y^2}"), "√(x² + y²)");
         assert_eq!(t(r"\sqrt[3]{8}"), "∛8");
         assert_eq!(t(r"x \in \mathbb{R}"), "x ∈ ℝ");

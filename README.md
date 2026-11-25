@@ -45,20 +45,39 @@ The file `docs/demo.md` shows most features on one screen: `mdr docs/demo.md`.
 
 ## Install
 
-You need Rust 1.90 or newer.
+You need Rust 1.90 or newer (`rustup update`). Install from GitHub:
 
 ```sh
+cargo install --locked --git https://github.com/chilimatic/mdr
+```
+
+Or from a clone, for example to change the code:
+
+```sh
+git clone https://github.com/chilimatic/mdr
+cd mdr
 cargo install --locked --path .
 ```
 
-This puts `mdr` in `~/.cargo/bin`. If that folder is not on your `PATH`, install into a
-folder that is, for example:
+This puts `mdr` in `~/.cargo/bin`. If that folder is not on your `PATH`, add
+`--root ~/.local` to install `~/.local/bin/mdr`.
 
-```sh
-cargo install --locked --path . --root ~/.local   # installs ~/.local/bin/mdr
-```
+`cargo install mdr` (without `--git`) installs a different program from crates.io that has
+the same name.
 
-Run the same command again to update. To remove: `cargo uninstall mdr` (add the same `--root`).
+Run the same command again to update. To remove: `cargo uninstall mdr` (add the same `--root`),
+and delete `~/.local/state/mdr/positions`, which lists the files you read.
+
+### Platforms
+
+- **Linux**: everything works. This is where mdr is developed and tested.
+- **macOS**: should work, but is not tried by hand; CI builds and tests on macOS. `y` copies
+  with `pbcopy`, links open with `open`.
+- **Windows**: not supported; use WSL. The editor (`e`) needs `sh`, and links need `xdg-open`.
+
+Terminal: mdr needs a terminal with 24-bit color for the best result. Images use the kitty,
+sixel or iTerm2 graphics protocol (kitty, WezTerm, foot, Ghostty, iTerm2, Konsole and others),
+otherwise block characters. Copying over ssh needs OSC 52 support in the terminal.
 
 ### Shell completions and man page
 
@@ -203,7 +222,7 @@ The search ignores case, unless the search text has an uppercase letter.
 ### Copying code
 
 `y` copies the code of a code block (for a diagram, its source). With a graphical session,
-mdr uses `wl-copy`, `xclip` or `xsel`, whichever is installed. Otherwise, for example over ssh,
+mdr uses `pbcopy` on macOS, and `wl-copy`, `xclip` or `xsel` on Linux, whichever is installed. Otherwise, for example over ssh,
 mdr asks the terminal to copy with the OSC 52 escape sequence; the message then says "sent to
 the terminal", because mdr cannot check that the terminal did it. Most terminals support it; in
 tmux, set `set -g set-clipboard on`.

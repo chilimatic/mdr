@@ -100,6 +100,8 @@ pub struct Ctx<'a> {
     pub sizer: &'a mut dyn ImageSizer,
     /// Interactive viewer (true) or printed output (false). Only the viewer can scroll sideways.
     pub interactive: bool,
+    /// Show link targets after the link text, for printed output.
+    pub link_targets: bool,
 }
 
 pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
@@ -930,7 +932,7 @@ impl<'a> Builder<'a> {
             TagEnd::Link => {
                 self.styles.pop();
                 // Printed text cannot be clicked: show where the link goes.
-                if !self.ctx.interactive
+                if self.ctx.link_targets
                     && let Some(url) = self.cur_link.map(|l| self.link_urls[l].clone())
                 {
                     let text: String = self.segs.get(self.link_start..).unwrap_or_default().iter().map(|s| s.text.as_str()).collect();
@@ -1259,7 +1261,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
+        let doc = render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false });
         doc.lines.into_iter().map(|l| l.plain.trim_end().to_string()).collect()
     }
 
@@ -1267,7 +1269,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true })
+        render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false })
     }
 
     #[test]
@@ -1445,7 +1447,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("see [here](https://x.y) ok", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
+        let doc = render("see [here](https://x.y) ok", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false });
         assert_eq!(doc.links.len(), 1);
         let l = &doc.links[0];
         let text: String = doc.lines[l.line].plain.chars().skip(l.start).take(l.end - l.start).collect();
@@ -1458,7 +1460,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("aa [bb cc dd](u) [ee](v)", Ctx { width: 8, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
+        let doc = render("aa [bb cc dd](u) [ee](v)", Ctx { width: 8, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false });
         let ids: Vec<usize> = doc.links.iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![0, 0, 1]);
     }
@@ -1474,7 +1476,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("[![b](https://img/x.svg)](https://target)", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
+        let doc = render("[![b](https://img/x.svg)](https://target)", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false });
         assert_eq!(doc.links.len(), 1);
         assert_eq!(doc.links[0].url, "https://target");
     }
@@ -1489,7 +1491,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Dark);
         let hl = Highlighter::new();
         let mut sizer = NoImages;
-        let doc = render("# Intro\n# Intro\n# Intro", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
+        let doc = render("# Intro\n# Intro\n# Intro", Ctx { width: 40, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true, link_targets: false });
         let slugs: Vec<&str> = doc.headings.iter().map(|h| h.slug.as_str()).collect();
         assert_eq!(slugs, vec!["intro", "intro-1", "intro-2"]);
     }
