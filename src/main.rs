@@ -6,6 +6,7 @@ mod grep;
 mod highlight;
 mod images;
 mod layout;
+mod math;
 mod picker;
 mod positions;
 mod print;

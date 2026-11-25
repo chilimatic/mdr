@@ -573,15 +573,21 @@ impl<'a> Builder<'a> {
                 }
             }
             Event::InlineMath(t) => {
-                let style = self.style().patch(self.theme().code_inline);
-                self.segs.push(Seg::new(t.to_string(), style, self.cur_link));
+                let style = self.style().patch(self.theme().math);
+                self.segs.push(Seg::new(crate::math::to_unicode(&t, false), style, self.cur_link));
             }
             Event::DisplayMath(t) => {
+                // A formula on its own lines, centered.
                 self.flush_inline();
-                let style = self.theme().code_inline;
-                for l in t.trim().lines() {
-                    self.segs.push(Seg::new(l.to_string(), style, None));
-                    self.segs.push(Seg { text: String::new(), style, link: None, hard_break: true });
+                let style = self.theme().math;
+                let text = crate::math::to_unicode(&t, true);
+                let w = self.avail();
+                for l in text.lines() {
+                    let pad = w.saturating_sub(l.width()) / 2;
+                    let mut spans = self.take_prefix();
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.push(Span::styled(l.to_string(), style));
+                    self.push_line(spans);
                 }
                 self.flush_inline();
             }
@@ -1156,6 +1162,15 @@ mod tests {
         // A blank line stays before the next heading.
         let b = doc.headings[2].line;
         assert_eq!(text[b - 1], "");
+    }
+
+    #[test]
+    fn math_inline_and_centered_display() {
+        let out = plain("Mass $E = mc^2$ here.\n\n$$\n\\alpha \\le \\beta\n$$\n", 30);
+        assert_eq!(out[0], "Mass E = mc² here.");
+        let d = out.iter().find(|l| l.contains('α')).unwrap();
+        assert_eq!(d.trim(), "α ≤ β");
+        assert_eq!(d.find('α'), Some((30 - 5) / 2), "{d:?}");
     }
 
     #[test]

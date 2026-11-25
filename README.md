@@ -12,6 +12,7 @@ mdr README.md
 - Headings, wrapped paragraphs, nested and task lists, quotes, GitHub alerts
   (`> [!NOTE]`), tables with column alignment, footnotes. Front matter is hidden.
 - Code blocks with syntax highlighting. `y` copies a code block to the clipboard.
+- Math: `$E = mc^2$` and `$$...$$` blocks are shown as Unicode text (E = mc²).
 - Fold sections with `z` to see the outline of a long document.
 - Search, a table of contents, and jumps between headings.
 - Links: select with `Tab` and open with `Enter`. A `#anchor` link jumps to the heading.
@@ -221,6 +222,16 @@ forget all positions, delete the file.
 Mouse capture is off, so you can select text with the mouse. Most terminals turn the
 mouse wheel into arrow keys in full-screen programs, so the wheel scrolls too.
 
+## Math
+
+mdr shows TeX math as Unicode text: inline math `$...$` in the line, and `$$...$$` blocks
+centered on their own lines. It knows Greek letters, the common operators and arrows,
+superscripts and subscripts (`x^2` → x², `a_{i+1}` → aᵢ₊₁), `\frac`, `\sqrt`, `\mathbb`,
+accents such as `\hat`, text commands, functions such as `\sin`, and the `matrix`, `pmatrix`,
+`bmatrix`, `cases` and `aligned` environments. Where Unicode has no superscript or subscript
+character, mdr writes `^(...)` or `_(...)`. Fractions are written as `a/b`. Commands that mdr
+does not know are shown as written.
+
 ## Diagrams
 
 mdr draws these fenced code blocks as text art instead of code:
@@ -315,5 +326,6 @@ element. Open them with `cargo run -- tests/fixtures/diagrams.md` to check chang
 | `src/positions.rs` | Stored reading positions |
 | `src/config.rs` | Config file |
 | `src/clipboard.rs` | Copying to the clipboard |
+| `src/math.rs` | TeX math to Unicode |
 | `src/search.rs` | Search |
 | `src/theme.rs` | Colors |
