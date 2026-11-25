@@ -999,6 +999,22 @@ mod tests {
     }
 
     #[test]
+    fn preview_of_a_large_multibyte_file_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("mdr-preview-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 'é' is two bytes; byte 65536 falls inside one. No newline at all.
+        std::fs::write(dir.join("big.md"), "xé".repeat(40_000)).unwrap();
+        let mut app = App::new(None, String::new(), ThemeKind::Dark, None, Images::new(None));
+        app.update_preview(&dir.join("big.md"), 60);
+        assert!(!app.preview.as_ref().unwrap().doc.lines.is_empty());
+        // A change on disk is noticed.
+        std::fs::write(dir.join("big.md"), "# Changed now\n").unwrap();
+        app.update_preview(&dir.join("big.md"), 60);
+        assert!(app.preview.as_ref().unwrap().doc.lines[0].plain.contains("Changed now"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn readme_renders_cleanly() {
         let mut app = app_for("README.md");
         let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();

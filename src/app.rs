@@ -37,6 +37,8 @@ pub enum Mode {
 /// A rendered file for the preview next to the file list.
 pub struct Preview {
     pub path: PathBuf,
+    /// Modification time and size when it was read, to notice changes.
+    pub stamp: Option<(std::time::SystemTime, u64)>,
     pub width: usize,
     pub theme: ThemeKind,
     pub doc: Doc,
@@ -62,7 +64,8 @@ pub struct App {
     pub link_selected: Option<usize>,
     pub message: Option<(String, Instant)>,
     pub watcher: Option<Watcher>,
-    pub history: Vec<(PathBuf, usize)>,
+    /// Previous files and the place in each (see `anchor`).
+    pub history: Vec<(PathBuf, (usize, usize))>,
     /// Set when mdr was started on a folder.
     pub picker: Option<Picker>,
     /// Start watching each file opened from the picker (`mdr --watch DIR`).
@@ -155,22 +158,35 @@ impl App {
 
     /// Renders `path` for the preview, unless the cached one fits.
     pub fn update_preview(&mut self, path: &Path, width: usize) {
-        if self.preview.as_ref().is_some_and(|p| p.path == path && p.width == width && p.theme == self.theme.kind) {
+        let stamp = std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.path == path && p.stamp == stamp && p.width == width && p.theme == self.theme.kind)
+        {
             return;
         }
-        // Large files: the start is enough for a preview.
-        const MAX: usize = 64 * 1024;
-        let mut text = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_else(|e| format!("cannot read: {e}"));
-        if text.len() > MAX {
-            let cut = text[..MAX].rfind('\n').unwrap_or(MAX);
-            text.truncate(cut);
-        }
+        // Large files: the start is enough for a preview. Read only that much.
+        const MAX: u64 = 64 * 1024;
+        let mut buf = Vec::new();
+        let read = std::fs::File::open(path).and_then(|f| std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX + 1), &mut buf));
+        let text = match read {
+            Ok(_) => {
+                if buf.len() as u64 > MAX {
+                    // Cut at the last full line; lossy decoding handles a cut character.
+                    let cut = buf.iter().rposition(|&b| b == b'\n').unwrap_or(buf.len());
+                    buf.truncate(cut);
+                }
+                String::from_utf8_lossy(&buf).into_owned()
+            }
+            Err(e) => format!("cannot read: {e}"),
+        };
         let mut sizer = Images::new(None);
         let doc = layout::render(
             &text,
             Ctx { width, theme: &self.theme, hl: &self.hl, base_dir: path.parent(), sizer: &mut sizer, interactive: false },
         );
-        self.preview = Some(Preview { path: path.to_path_buf(), width, theme: self.theme.kind, doc });
+        self.preview = Some(Preview { path: path.to_path_buf(), stamp, width, theme: self.theme.kind, doc });
     }
 
     /// Shows the file list of a folder instead of a document.
@@ -250,7 +266,9 @@ impl App {
                 interactive: true,
             },
         );
-        layout::fold(&mut self.doc, &self.folded, self.theme.dim);
+        layout::fold(&mut self.doc, &self.folded, self.theme.dim, width);
+        // Code block numbers may have changed.
+        self.last_yank = None;
         self.layout_width = width;
         // Link ids depend only on the source, so the same link is found again after a relayout.
         self.link_selected = selected_id.and_then(|id| self.doc.links.iter().position(|l| l.id == id));
@@ -297,6 +315,10 @@ impl App {
                 let nth = self.doc.headings[..i].iter().filter(|o| o.slug == h.slug).count();
                 (h.slug.clone(), nth, self.scroll - h.line)
             });
+        if text != self.text {
+            // Stored jump places are offsets into the old text.
+            self.jumps.clear();
+        }
         self.text = text;
         self.link_selected = None;
         self.images.clear();
@@ -322,7 +344,7 @@ impl App {
         };
         self.save_position();
         if let Some(cur) = self.path.take() {
-            self.history.push((cur, self.scroll));
+            self.history.push((cur, self.anchor().unwrap_or((0, 0))));
         }
         let watching = self.watcher.is_some();
         self.watcher = None;
@@ -437,7 +459,7 @@ impl App {
             return;
         }
         self.save_position();
-        let Some((path, scroll)) = self.history.pop() else {
+        let Some((path, place)) = self.history.pop() else {
             if let Some(pk) = self.picker.as_mut() {
                 self.mode = Mode::Picker;
                 self.message = None;
@@ -467,7 +489,7 @@ impl App {
         self.folded.clear();
         self.jumps.clear();
         self.render_doc();
-        self.scroll = scroll.min(self.max_scroll());
+        self.scroll_to_anchor(place);
         if watching {
             self.toggle_watch();
         }
@@ -513,7 +535,7 @@ impl App {
         };
         match target {
             Some(line) => self.jump_to_line(line),
-            None if anchor.starts_with("fn") => self.set_message("footnote not found (folded?)"),
+            None if anchor.starts_with("fn:") || anchor.starts_with("fnref:") => self.set_message("footnote not found (folded?)"),
             None => self.set_message(format!("no heading #{anchor}")),
         }
     }
@@ -536,10 +558,16 @@ impl App {
             return;
         };
         let slug = self.doc.headings[i].slug.clone();
-        if !self.folded.remove(&slug) {
-            self.folded.insert(slug.clone());
+        let before = self.doc.lines.len();
+        let folding = self.folded.insert(slug.clone());
+        if !folding {
+            self.folded.remove(&slug);
         }
         self.relayout();
+        if folding && self.doc.lines.len() == before {
+            self.folded.remove(&slug);
+            self.set_message("nothing to fold in this section");
+        }
         if let Some(h) = self.doc.headings.iter().find(|h| h.slug == slug) {
             self.scroll = h.line.min(self.max_scroll());
         }
@@ -1025,10 +1053,15 @@ impl App {
                         if let Some((path, line)) = self.edit_request.take() {
                             self.run_editor(terminal, &path, line)?;
                         }
-                        if let Some(text) = self.clipboard_request.take()
-                            && let Err(e) = clipboard::copy(&text)
-                        {
-                            self.set_message(format!("copy failed: {e}"));
+                        if let Some(text) = self.clipboard_request.take() {
+                            match clipboard::copy(&text) {
+                                Ok(how) => {
+                                    if let Some((msg, _)) = &mut self.message {
+                                        msg.push_str(&format!(" ({how})"));
+                                    }
+                                }
+                                Err(e) => self.set_message(format!("copy failed: {e}")),
+                            }
                         }
                         dirty = true;
                     }

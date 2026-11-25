@@ -118,7 +118,7 @@ pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
 
 /// Hides the content of the sections whose heading slug is in `folded`, and adds
 /// "▸ N lines folded" to those headings. Line numbers in `doc` are updated.
-pub fn fold(doc: &mut Doc, folded: &std::collections::HashSet<String>, mark: Style) {
+pub fn fold(doc: &mut Doc, folded: &std::collections::HashSet<String>, mark: Style, width: usize) {
     if folded.is_empty() {
         return;
     }
@@ -140,10 +140,20 @@ pub fn fold(doc: &mut Doc, folded: &std::collections::HashSet<String>, mark: Sty
             continue;
         }
         keep[start..end].iter_mut().for_each(|k| *k = false);
-        marks.push((h.line, end - start));
+        // The mark goes on the last row of the title, not on the underline or the blank line.
+        let mut last = h.line;
+        while last + 1 < start && {
+            let p = doc.lines[last + 1].plain.trim();
+            !p.is_empty() && !p.chars().all(|c| c == '━' || c == '─')
+        } {
+            last += 1;
+        }
+        marks.push((last, end - start));
     }
     for (line, count) in marks {
-        let text = format!("  ▸ {count} lines folded");
+        let long = format!("  ▸ {count} lines folded");
+        let used = doc.lines[line].plain.width();
+        let text = if used + long.width() <= width { long } else { format!(" ▸{count}") };
         let l = &mut doc.lines[line];
         l.plain.push_str(&text);
         l.spans.push(Span::styled(text, mark));
@@ -173,7 +183,8 @@ pub fn fold(doc: &mut Doc, folded: &std::collections::HashSet<String>, mark: Sty
         c.first = map[c.first];
         c.last = map[c.last];
     });
-    doc.anchors.iter_mut().for_each(|a| a.1 = map[a.1.min(n.saturating_sub(1))]);
+    doc.anchors.retain(|a| a.1 < n && keep[a.1]);
+    doc.anchors.iter_mut().for_each(|a| a.1 = map[a.1]);
     doc.width = doc.lines.iter().map(|l| l.plain.width()).max().unwrap_or(0);
 }
 
@@ -573,6 +584,11 @@ impl<'a> Builder<'a> {
                 }
             }
             Event::InlineMath(t) => {
+                let style = self.style().patch(self.theme().math);
+                self.segs.push(Seg::new(crate::math::to_unicode(&t, false), style, self.cur_link));
+            }
+            Event::DisplayMath(t) if self.table.is_some() || self.heading.is_some() || self.cur_link.is_some() => {
+                // No room for lines of its own here: keep it in the text.
                 let style = self.style().patch(self.theme().math);
                 self.segs.push(Seg::new(crate::math::to_unicode(&t, false), style, self.cur_link));
             }
@@ -1144,11 +1160,23 @@ mod tests {
     }
 
     #[test]
+    fn fold_keys_are_unique_for_repeated_headings() {
+        let mut doc = doc_of("## Example\n\none\n\n## Example\n\ntwo\n\n## Example 1\n\nthree\n", 40);
+        let slugs: Vec<&str> = doc.headings.iter().map(|h| h.slug.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = slugs.iter().copied().collect();
+        assert_eq!(unique.len(), slugs.len(), "{slugs:?}");
+        let folded: std::collections::HashSet<String> = [doc.headings[1].slug.clone()].into();
+        fold(&mut doc, &folded, Style::default(), 40);
+        let text: Vec<&str> = doc.lines.iter().map(|l| l.plain.trim_end()).collect();
+        assert!(text.contains(&"one") && !text.contains(&"two") && text.contains(&"three"), "{text:#?}");
+    }
+
+    #[test]
     fn folds_sections() {
         let md = "# Top\n\nintro\n\n## A\n\na1\n\n### A.1\n\ndeep [link](x)\n\n## B\n\nb1\n";
         let mut doc = doc_of(md, 40);
         let folded: std::collections::HashSet<String> = ["a".to_string()].into();
-        fold(&mut doc, &folded, Style::default());
+        fold(&mut doc, &folded, Style::default(), 40);
         let text: Vec<&str> = doc.lines.iter().map(|l| l.plain.trim_end()).collect();
         assert!(text.iter().any(|l| l.starts_with("A") && l.contains("▸ 5 lines folded")), "{text:#?}");
         assert!(!text.iter().any(|l| l.contains("a1") || l.contains("deep")), "{text:#?}");

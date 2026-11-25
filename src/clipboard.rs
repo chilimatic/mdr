@@ -23,17 +23,32 @@ pub fn copy(text: &str) -> std::io::Result<&'static str> {
         else {
             continue;
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
+        let written = child.stdin.take().map(|mut s| s.write_all(text.as_bytes()));
+        if matches!(written, Some(Err(_))) {
+            let _ = child.kill();
+            let _ = child.wait();
+            continue;
         }
-        // xclip and wl-copy keep running to serve the clipboard; reap them later.
-        std::thread::spawn(move || child.wait());
-        return Ok(tool);
+        // A tool that cannot reach the display exits at once with an error.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        if let Ok(Some(status)) = child.try_wait() {
+            if !status.success() {
+                continue;
+            }
+        } else {
+            // xclip and wl-copy keep running to serve the clipboard; reap them later.
+            std::thread::spawn(move || child.wait());
+        }
+        return Ok(match tool {
+            "wl-copy" => "via wl-copy",
+            "xclip" => "via xclip",
+            _ => "via xsel",
+        });
     }
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
     out.flush()?;
-    Ok("terminal")
+    Ok("sent to the terminal")
 }
 
 fn base64(data: &[u8]) -> String {

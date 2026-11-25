@@ -88,10 +88,20 @@ struct Class {
 
 /// `List~T~` becomes `List<T>`, nested generics too.
 fn generics(s: &str) -> String {
-    match s.find('~') {
-        Some(p) if s.ends_with('~') && s.len() > p + 1 => format!("{}<{}>", &s[..p], generics(&s[p + 1..s.len() - 1])),
-        _ => s.to_string(),
+    // A loop, not recursion: a line of many `~` must not overflow the stack.
+    let (mut head, mut rest, mut depth) = (String::new(), s, 0);
+    while depth < 8 {
+        match rest.find('~') {
+            Some(p) if rest.ends_with('~') && rest.len() > p + 1 => {
+                head.push_str(&rest[..p]);
+                head.push('<');
+                rest = &rest[p + 1..rest.len() - 1];
+                depth += 1;
+            }
+            _ => break,
+        }
     }
+    format!("{head}{rest}{}", ">".repeat(depth))
 }
 
 /// Class id (`List`) and display name (`List<T>`).
@@ -372,4 +382,16 @@ pub fn parse_er(body: &[&str]) -> Result<Graph, String> {
         g.nodes[i].label = boxed(None, &name, &[a]);
     }
     Ok(g)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generics_nest_and_survive_long_input() {
+        assert_eq!(generics("List~T~"), "List<T>");
+        assert_eq!(generics("Map~K, List~V~~"), "Map<K, List<V>>");
+        let _ = generics(&"~".repeat(60_000));
+    }
 }

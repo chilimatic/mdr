@@ -6,6 +6,10 @@
 
 /// Converts TeX math to one line of text (`display`: `\\` starts a new line).
 pub fn to_unicode(tex: &str, display: bool) -> String {
+    // Very long formulas are shown as written; converting them is not worth the time.
+    if tex.len() > MAX_INPUT {
+        return tex.to_string();
+    }
     let chars: Vec<char> = tex.chars().collect();
     let mut p = P { c: &chars, i: 0, display, depth: 0 };
     let out = p.seq(None);
@@ -28,6 +32,7 @@ struct P<'a> {
 }
 
 const MAX_DEPTH: usize = 50;
+const MAX_INPUT: usize = 20_000;
 
 impl P<'_> {
     fn peek(&self) -> Option<char> {
@@ -209,18 +214,19 @@ impl P<'_> {
         let env = self.arg();
         let env = env.trim_end_matches('*');
         let body_start = self.i;
-        let end = format!("\\end{{{env}");
-        let rest: String = self.c[body_start..].iter().collect();
-        let (body, skip) = match rest.find(&end) {
-            Some(k) => (rest[..k].to_string(), k + end.len()),
-            None => (rest.clone(), rest.len()),
+        let end: Vec<char> = format!("\\end{{{env}").chars().collect();
+        let rest = &self.c[body_start..];
+        let (body_end, skip) = match rest.windows(end.len()).position(|w| w == end.as_slice()) {
+            Some(k) => (k, k + end.len()),
+            None => (rest.len(), rest.len()),
         };
-        self.i = body_start + rest[..skip].chars().count();
+        let body: Vec<char> = rest[..body_end].to_vec();
+        self.i = body_start + skip;
         // Skip the closing `}` and a starred `*}`.
         while matches!(self.peek(), Some('*') | Some('}')) {
             self.i += 1;
         }
-        let inner = P { c: &body.chars().collect::<Vec<_>>(), i: 0, display: self.display, depth: self.depth + 1 }.run();
+        let inner = P { c: &body, i: 0, display: self.display, depth: self.depth + 1 }.run();
         let rows: Vec<&str> = inner.split(['\n', ';']).map(str::trim).filter(|r| !r.is_empty()).collect();
         let sep = if self.display { "\n" } else { "; " };
         let joined = rows.join(sep);
@@ -496,6 +502,10 @@ mod tests {
         let _ = t(&"{".repeat(10_000));
         let _ = t(&r"\frac".repeat(10_000));
         let _ = t(&r"\sqrt[".repeat(10_000));
+        let start = std::time::Instant::now();
+        let _ = to_unicode(&r"\begin{a}\end{a}".repeat(1_200), true);
+        let _ = to_unicode(&r"\begin{a}".repeat(2_000), true);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
         let _ = t(r"\begin{pmatrix");
         let _ = t(r"\sqrt[");
         let _ = t("^_^_\\");

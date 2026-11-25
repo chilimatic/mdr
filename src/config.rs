@@ -48,9 +48,11 @@ impl Config {
     /// Reads the config file. A missing file is an empty config; a broken file is an error.
     pub fn load() -> Result<Self> {
         let Some(path) = Self::path() else { return Ok(Config::default()) };
+        // A file named in $MDR_CONFIG must exist; the default file is optional.
+        let explicit = std::env::var_os("MDR_CONFIG").is_some_and(|v| !v.is_empty());
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !explicit => return Ok(Config::default()),
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
         Self::parse(&text).with_context(|| format!("error in {}", path.display()))

@@ -93,7 +93,8 @@ and images are drawn with block characters.
 ### Config file
 
 mdr reads `~/.config/mdr/config.toml` (or `$XDG_CONFIG_HOME/mdr/config.toml`, or the file in
-`$MDR_CONFIG`). All settings are optional. Options on the command line win over the file.
+`$MDR_CONFIG`; that file must exist). All settings are optional. `--theme`, `--width`,
+`--color` and `--no-images` win over the file. To ignore the file, use `--no-config`.
 
 ```toml
 theme = "auto"      # auto, dark or light
@@ -189,8 +190,9 @@ The search ignores case, unless the search text has an uppercase letter.
 
 `y` copies the code of a code block (for a diagram, its source). With a graphical session,
 mdr uses `wl-copy`, `xclip` or `xsel`, whichever is installed. Otherwise, for example over ssh,
-mdr asks the terminal to copy with the OSC 52 escape sequence. Most terminals support it; in tmux,
-set `set -g set-clipboard on`.
+mdr asks the terminal to copy with the OSC 52 escape sequence; the message then says "sent to
+the terminal", because mdr cannot check that the terminal did it. Most terminals support it; in
+tmux, set `set -g set-clipboard on`.
 
 ### Folding
 
@@ -229,8 +231,9 @@ centered on their own lines. It knows Greek letters, the common operators and ar
 superscripts and subscripts (`x^2` → x², `a_{i+1}` → aᵢ₊₁), `\frac`, `\sqrt`, `\mathbb`,
 accents such as `\hat`, text commands, functions such as `\sin`, and the `matrix`, `pmatrix`,
 `bmatrix`, `cases` and `aligned` environments. Where Unicode has no superscript or subscript
-character, mdr writes `^(...)` or `_(...)`. Fractions are written as `a/b`. Commands that mdr
-does not know are shown as written.
+character, mdr writes `^(...)` or `_(...)`. Fractions are written as `a/b`. A command that mdr
+does not know is shown with its name, for example `\foo`. Formulas longer than 20,000
+characters are shown as written. In a table, a heading or a link, `$$...$$` stays in the line.
 
 ## Diagrams
 
@@ -254,8 +257,9 @@ relationship with its cardinality, for example `places (1 to 0..n)`. Dotted line
 non-identifying relationships. Attribute comments are not shown.
 Gantt charts draw one bar per task on a day scale that fits the window. They support
 `title`, `section`, the tags `done`, `active`, `crit` and `milestone`, dates, `after id`
-and durations (`3d`, `2w`, `12h`). Only `dateFormat YYYY-MM-DD` works. `axisFormat`,
-`excludes` and `todayMarker` are ignored.
+and durations (`3d`, `2w`, `12h`). `after id` must name a task above it. Only
+`dateFormat YYYY-MM-DD` works. `axisFormat`, `excludes`, `todayMarker`, `tickInterval` and
+`inclusiveEndDates` are ignored. `until` is not supported: mdr shows a warning and the source.
 
 A graph, class, ER or sequence diagram that is wider than the window is still drawn. A line above it
 says so, and you scroll sideways with `h` and `l`. The status bar then shows the current

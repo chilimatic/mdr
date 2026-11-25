@@ -8,7 +8,7 @@ fn mdr(args: &[&str], stdin: Option<&str>) -> (bool, String, String) {
         .args(args)
         .env_remove("NO_COLOR")
         // Never the user's config file.
-        .env("MDR_CONFIG", "tests/fixtures/no-such-config.toml")
+        .env("MDR_CONFIG", "tests/fixtures/empty-config.toml")
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
