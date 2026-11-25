@@ -697,7 +697,18 @@ impl App {
         // A scheme is the part before the first ':' if no '/' comes earlier.
         let scheme = url.split_once(':').filter(|(s, _)| !s.contains('/') && !s.is_empty()).map(|(s, _)| s.to_ascii_lowercase());
         match scheme.as_deref() {
-            Some("http" | "https" | "mailto") => {
+            Some("http" | "https") => {
+                self.spawn_open(&url);
+                return;
+            }
+            Some("mailto") => {
+                // Only the address, subject and body: some mail clients honour `attach=`.
+                let (addr, query) = url.split_once('?').unwrap_or((&url, ""));
+                let keep: Vec<&str> = query
+                    .split('&')
+                    .filter(|p| p.split('=').next().is_some_and(|k| k.eq_ignore_ascii_case("subject") || k.eq_ignore_ascii_case("body")))
+                    .collect();
+                let url = if keep.is_empty() { addr.to_string() } else { format!("{addr}?{}", keep.join("&")) };
                 self.spawn_open(&url);
                 return;
             }

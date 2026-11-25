@@ -379,7 +379,14 @@ struct TableB {
     aligns: Vec<Alignment>,
     rows: Vec<Vec<Vec<Seg>>>,
     header_rows: usize,
+    /// Cells that were left out because the table is too large.
+    dropped: usize,
+    cells: usize,
 }
+
+/// Larger tables are cut: the rest of the cells are counted, not drawn.
+const MAX_TABLE_COLS: usize = 64;
+const MAX_TABLE_CELLS: usize = 50_000;
 
 struct Builder<'a> {
     ctx: Ctx<'a>,
@@ -825,7 +832,7 @@ impl<'a> Builder<'a> {
             Tag::Table(aligns) => {
                 self.src = offset;
                 self.begin_block();
-                self.table = Some(TableB { aligns, rows: Vec::new(), header_rows: 0 });
+                self.table = Some(TableB { aligns, rows: Vec::new(), header_rows: 0, dropped: 0, cells: 0 });
             }
             Tag::TableHead | Tag::TableRow => {
                 if let Some(t) = &mut self.table {
@@ -925,8 +932,15 @@ impl<'a> Builder<'a> {
             TagEnd::TableRow => {}
             TagEnd::TableCell => {
                 let cell = std::mem::take(&mut self.segs);
-                if let Some(row) = self.table.as_mut().and_then(|t| t.rows.last_mut()) {
-                    row.push(cell);
+                if let Some(t) = self.table.as_mut() {
+                    let fits = t.cells < MAX_TABLE_CELLS && t.rows.last().is_some_and(|r| r.len() < MAX_TABLE_COLS);
+                    match t.rows.last_mut() {
+                        Some(row) if fits => {
+                            row.push(cell);
+                            t.cells += 1;
+                        }
+                        _ => t.dropped += 1,
+                    }
                 }
             }
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Superscript | TagEnd::Subscript => {
@@ -1164,12 +1178,18 @@ impl<'a> Builder<'a> {
         }
         let overhead = 3 * ncols + 1;
         let avail = self.avail().saturating_sub(overhead);
-        while widths.iter().sum::<usize>() > avail {
-            let (i, &max) = widths.iter().enumerate().max_by_key(|(_, w)| **w).unwrap();
-            if max <= 3 {
-                break;
+        // Narrow the widest columns to a common cap: the largest cap (at least 3) that fits.
+        // A binary search, so a very wide table costs O(columns × log width).
+        if widths.iter().sum::<usize>() > avail {
+            let fits = |cap: usize| widths.iter().map(|&w| w.min(cap)).sum::<usize>() <= avail;
+            let (mut lo, mut hi) = (3, widths.iter().copied().max().unwrap_or(3));
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                if fits(mid) { lo = mid } else { hi = mid - 1 }
             }
-            widths[i] = max - 1;
+            for w in &mut widths {
+                *w = (*w).min(lo);
+            }
         }
 
         let border = self.theme().table_border;
@@ -1241,6 +1261,11 @@ impl<'a> Builder<'a> {
         let mut spans = self.take_prefix();
         spans.push(bottom);
         self.push_line(spans);
+        if t.dropped > 0 {
+            let mut spans = self.take_prefix();
+            spans.push(Span::styled(format!("⚠ table too large: {} cells not shown", t.dropped), self.theme().dim));
+            self.push_line(spans);
+        }
     }
 }
 
@@ -1368,6 +1393,19 @@ mod tests {
         let out = plain("# Title\n\n---\nnot: frontmatter\n---\n\ntext\n", 40);
         assert!(out.iter().any(|l| l == "not: frontmatter"), "{out:#?}");
         assert!(out.iter().any(|l| l == "text"));
+    }
+
+    #[test]
+    fn huge_tables_are_cut_and_fast() {
+        let start = std::time::Instant::now();
+        let row = |c: &str| format!("|{}|\n", vec![c; 3000].join("|"));
+        let md = format!("{}{}{}", row("h"), row("-"), row(&"x".repeat(50)).repeat(20));
+        let doc = doc_of(&md, 100);
+        assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
+        assert!(doc.lines.iter().any(|l| l.plain.contains("table too large")));
+        // Normal tables still shrink their widest column to fit.
+        let doc = doc_of("| a | b |\n|---|---|\n| short | a much longer cell text here |\n", 30);
+        assert!(doc.width <= 30, "{}", doc.width);
     }
 
     #[test]
