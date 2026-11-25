@@ -333,3 +333,7 @@ element. Open them with `cargo run -- tests/fixtures/diagrams.md` to check chang
 | `src/math.rs` | TeX math to Unicode |
 | `src/search.rs` | Search |
 | `src/theme.rs` | Colors |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

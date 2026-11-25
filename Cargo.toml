@@ -3,6 +3,8 @@ name = "mdr"
 version = "0.1.0"
 edition = "2024"
 description = "Interactive terminal markdown viewer"
+license = "MIT"
+repository = "https://github.com/chilimatic/mdr"
 
 [dependencies]
 anyhow = "1.0.105"
