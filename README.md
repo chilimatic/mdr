@@ -11,7 +11,8 @@ mdr README.md
 
 - Headings, wrapped paragraphs, nested and task lists, quotes, GitHub alerts
   (`> [!NOTE]`), tables with column alignment, footnotes. Front matter is hidden.
-- Code blocks with syntax highlighting.
+- Code blocks with syntax highlighting. `y` copies a code block to the clipboard.
+- Fold sections with `z` to see the outline of a long document.
 - Search, a table of contents, and jumps between headings.
 - Links: select with `Tab` and open with `Enter`. A `#anchor` link jumps to the heading.
   A link to another `.md` file opens it in mdr, and `Backspace` goes back. Other links
@@ -164,8 +165,10 @@ active or `⏎ open link` while a link is selected. `?` shows all keys.
 | `/` | Search. Type the text and press `Enter`. |
 | `n` / `N` | Next / previous match |
 | `Tab` / `Shift-Tab` | Select the next / previous link |
-| `Enter` / `o` | Open the selected link |
-| `Backspace` | Go back to the previous file, or to the file list |
+| `Enter` / `o` | Open the selected link. A footnote reference `[^1]` jumps to the footnote, and the label in front of the footnote jumps back. |
+| `Backspace` | Go back: to the place before a jump in the file (link, footnote, contents), then to the previous file, then to the file list |
+| `y` | Copy the first code block on the screen. Press `y` again within 3 seconds to copy the next one. |
+| `z` / `Z` | Fold or unfold the section at the top of the screen / fold or unfold all sections |
 | `T` | Switch between dark and light theme |
 | `+` / `-` / `0` | Wider / narrower text / default width |
 | `w` | Turn watch mode on or off |
@@ -176,6 +179,21 @@ active or `⏎ open link` while a link is selected. `?` shows all keys.
 | `q` / `Ctrl-c` | Quit |
 
 The search ignores case, unless the search text has an uppercase letter.
+
+### Copying code
+
+`y` copies the code of a code block (for a diagram, its source). With a graphical session,
+mdr uses `wl-copy`, `xclip` or `xsel`, whichever is installed. Otherwise, for example over ssh,
+mdr asks the terminal to copy with the OSC 52 escape sequence. Most terminals support it; in tmux,
+set `set -g set-clipboard on`.
+
+### Folding
+
+`z` folds the section whose heading is at the top of the screen: mdr shows only the heading and
+the number of hidden lines. `z` on that heading opens it again. `Z` folds all sections at the
+main level and below, so you see the outline; `Z` again opens all. Search and links skip folded
+text. Folds stay when the window or the text width changes, and are reset when you open another
+file.
 
 ### Editor
 
@@ -282,5 +300,6 @@ element. Open them with `cargo run -- tests/fixtures/diagrams.md` to check chang
 | `src/grep.rs` | Text search across the files of a folder |
 | `src/positions.rs` | Stored reading positions |
 | `src/config.rs` | Config file |
+| `src/clipboard.rs` | Copying to the clipboard |
 | `src/search.rs` | Search |
 | `src/theme.rs` | Colors |

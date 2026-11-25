@@ -87,11 +87,22 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             if !app.doc.links.is_empty() && app.link_selected.is_none() {
                 k.push(("Tab", "links"));
             }
-            if !app.history.is_empty() || app.picker.is_some() {
-                k.push(("⌫", if app.history.is_empty() { "file list" } else { "back" }));
+            if !app.jumps.is_empty() || !app.history.is_empty() {
+                k.push(("⌫", "back"));
+            } else if app.picker.is_some() {
+                k.push(("⌫", "file list"));
+            }
+            let (top, bottom) = (app.scroll, app.scroll + app.view_height);
+            if app.doc.code_blocks.iter().any(|c| c.first < bottom && c.last >= top) {
+                k.push(("y", "copy code"));
             }
             if app.path.is_some() {
                 k.push(("e", "edit"));
+            }
+            if !app.folded.is_empty() {
+                k.push(("Z", "unfold all"));
+            } else if !app.doc.headings.is_empty() {
+                k.push(("z", "fold"));
             }
             // Least important: left out first when the row is full.
             if app.max_scroll() > 0 {
@@ -418,8 +429,10 @@ const HELP: &[(&str, &str)] = &[
     ("/", "search"),
     ("n/N", "next/prev match"),
     ("Tab/S-Tab", "select link"),
-    ("⏎ / o", "open link"),
-    ("Backspace", "back (previous file or file list)"),
+    ("⏎ / o", "open link (also footnotes)"),
+    ("Backspace", "back: jump, file, file list"),
+    ("y", "copy code block (again: next)"),
+    ("z / Z", "fold section / all"),
     ("T", "toggle dark/light theme"),
     ("+/-/0", "wider/narrower/reset width"),
     ("w", "toggle watch mode"),
@@ -820,6 +833,78 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let b = keys(&screen(&term));
         assert!(b.contains("? all keys") && b.contains("q quit"), "{b}");
+    }
+
+    #[test]
+    fn footnote_jump_and_back() {
+        let md = format!("Start[^n] here.\n\n{}\n[^n]: The note text.\n", "filler\n\n".repeat(40));
+        let mut app = App::new(None, md, ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.doc.links[app.link_selected.unwrap()].url, "#fn:n");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.scroll > 0);
+        let note = app.doc.anchors[0].1;
+        assert!(note >= app.scroll && note < app.scroll + app.view_height);
+        assert!(app.doc.lines[note].plain.contains("The note text"));
+        assert!(key_hints(&app).contains(&("⌫", "back")));
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.scroll, 0);
+
+        // From the footnote back to where it is used.
+        key(&mut app, KeyCode::Char('G'));
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.doc.links[app.link_selected.unwrap()].url, "#fnref:n");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn copy_code_blocks_one_after_another() {
+        let mut app = App::new(None, "```sh\necho one\n```\n\n```\ntwo\n```\n".into(), ThemeKind::Dark, None, Images::new(None));
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(keys(&screen(&term)).contains("y copy code"));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.clipboard_request.take().as_deref(), Some("echo one"));
+        assert!(app.message.as_ref().unwrap().0.contains("copied sh (1 lines)"));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.clipboard_request.take().as_deref(), Some("two"));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.clipboard_request.take().as_deref(), Some("echo one"));
+
+        let mut plain = App::new(None, "no code".into(), ThemeKind::Dark, None, Images::new(None));
+        term.draw(|f| draw(f, &mut plain)).unwrap();
+        key(&mut plain, KeyCode::Char('y'));
+        assert!(plain.clipboard_request.is_none());
+    }
+
+    #[test]
+    fn fold_and_unfold_sections() {
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(70, 30)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let total = app.doc.lines.len();
+        key(&mut app, KeyCode::Char(']'));
+        let title = app.doc.headings[app.current_heading().unwrap()].title.clone();
+        key(&mut app, KeyCode::Char('z'));
+        assert!(app.doc.lines.len() < total);
+        let h = &app.doc.headings[app.current_heading().unwrap()];
+        assert_eq!(h.title, title);
+        assert!(app.doc.lines[h.line].plain.contains("lines folded"));
+        key(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.doc.lines.len(), total);
+
+        key(&mut app, KeyCode::Char('Z'));
+        assert!(app.doc.lines.len() < total / 2, "{} of {total}", app.doc.lines.len());
+        assert!(key_hints(&app).contains(&("Z", "unfold all")));
+        // Folds survive a width change, and Z opens everything.
+        key(&mut app, KeyCode::Char('-'));
+        assert!(app.doc.lines.len() < total / 2);
+        key(&mut app, KeyCode::Char('Z'));
+        assert!(app.folded.is_empty());
     }
 
     #[test]

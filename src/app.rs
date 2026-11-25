@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::clipboard;
 use crate::grep::{self, Grep};
 use crate::highlight::Highlighter;
 use crate::images::Images;
@@ -63,6 +64,15 @@ pub struct App {
     /// Set by `e`: file and source line to open in the editor. The main loop runs it,
     /// because the editor needs the terminal.
     pub edit_request: Option<(PathBuf, usize)>,
+    /// Slugs of the folded sections.
+    pub folded: std::collections::HashSet<String>,
+    /// Positions before jumps inside the file (links to headings, footnotes, contents).
+    /// `Backspace` goes back to them first.
+    pub jumps: Vec<(usize, usize)>,
+    /// Set by `y`: text for the clipboard. The main loop copies it (it writes to the terminal).
+    pub clipboard_request: Option<String>,
+    /// Last copied code block and when, so `y` again copies the next one.
+    last_yank: Option<(usize, Instant)>,
     /// Editor command from the config file; else `$VISUAL` / `$EDITOR`.
     pub editor: Option<String>,
     /// Show the key bar.
@@ -108,6 +118,10 @@ impl App {
             ignore_changes_until: None,
             editor: None,
             key_bar: true,
+            folded: Default::default(),
+            jumps: Vec::new(),
+            clipboard_request: None,
+            last_yank: None,
             layout_width: 0,
             quit: false,
         }
@@ -202,6 +216,7 @@ impl App {
                 interactive: true,
             },
         );
+        layout::fold(&mut self.doc, &self.folded, self.theme.dim);
         self.layout_width = width;
         // Link ids depend only on the source, so the same link is found again after a relayout.
         self.link_selected = selected_id.and_then(|id| self.doc.links.iter().position(|l| l.id == id));
@@ -283,12 +298,17 @@ impl App {
         self.link_selected = None;
         self.search = None;
         self.images.clear();
+        // Folds and jumps belong to one file.
+        self.folded.clear();
+        self.jumps.clear();
         self.render_doc();
         if watching || self.auto_watch {
             self.toggle_watch();
         }
         if let Some(a) = anchor {
             self.jump_to_anchor(a);
+            // Backspace should go to the previous file, not to the top of this one.
+            self.jumps.clear();
         }
         true
     }
@@ -378,6 +398,10 @@ impl App {
     }
 
     fn go_back(&mut self) {
+        if let Some(a) = self.jumps.pop() {
+            self.scroll_to_anchor(a);
+            return;
+        }
         self.save_position();
         let Some((path, scroll)) = self.history.pop() else {
             if let Some(pk) = self.picker.as_mut() {
@@ -405,6 +429,9 @@ impl App {
         self.link_selected = None;
         self.search = None;
         self.images.clear();
+        // Folds and jumps belong to one file.
+        self.folded.clear();
+        self.jumps.clear();
         self.render_doc();
         self.scroll = scroll.min(self.max_scroll());
         if watching {
@@ -438,13 +465,95 @@ impl App {
         }
     }
 
+    /// Jumps to a heading slug, a footnote (`fn:label`) or a footnote reference (`fnref:label`).
     fn jump_to_anchor(&mut self, anchor: &str) {
-        let slug = layout::slugify(&percent_decode(anchor));
+        let anchor = percent_decode(anchor);
+        let target = if let Some(label) = anchor.strip_prefix("fnref:") {
+            let url = format!("#fn:{label}");
+            self.doc.links.iter().find(|l| l.url == url).map(|l| l.line)
+        } else if let Some(a) = self.doc.anchors.iter().find(|(name, _)| *name == anchor) {
+            Some(a.1)
+        } else {
+            let slug = layout::slugify(&anchor);
+            self.doc.headings.iter().find(|h| h.slug == slug).map(|h| h.line)
+        };
+        match target {
+            Some(line) => self.jump_to_line(line),
+            None if anchor.starts_with("fn") => self.set_message("footnote not found (folded?)"),
+            None => self.set_message(format!("no heading #{anchor}")),
+        }
+    }
+
+    /// Scrolls to `line` and remembers the old position for `Backspace`.
+    fn jump_to_line(&mut self, line: usize) {
+        if let Some(a) = self.anchor() {
+            self.jumps.push(a);
+            if self.jumps.len() > 100 {
+                self.jumps.remove(0);
+            }
+        }
+        self.scroll = line.min(self.max_scroll());
+    }
+
+    /// `z`: folds or unfolds the section at the top of the screen.
+    fn toggle_fold(&mut self) {
+        let Some(i) = self.current_heading() else {
+            self.set_message("no section here (z folds the section at the top)");
+            return;
+        };
+        let slug = self.doc.headings[i].slug.clone();
+        if !self.folded.remove(&slug) {
+            self.folded.insert(slug.clone());
+        }
+        self.relayout();
         if let Some(h) = self.doc.headings.iter().find(|h| h.slug == slug) {
             self.scroll = h.line.min(self.max_scroll());
-        } else {
-            self.set_message(format!("no heading #{anchor}"));
         }
+    }
+
+    /// `Z`: unfolds everything, or folds all sections from the main level down.
+    fn toggle_fold_all(&mut self) {
+        if !self.folded.is_empty() {
+            self.folded.clear();
+            self.relayout();
+            self.set_message("unfolded all");
+            return;
+        }
+        // The main level: the highest level that has more than one heading.
+        let Some(level) = (1..=6).find(|&lv| self.doc.headings.iter().filter(|h| h.level == lv).count() > 1) else {
+            self.set_message("nothing to fold");
+            return;
+        };
+        self.folded = self.doc.headings.iter().filter(|h| h.level >= level).map(|h| h.slug.clone()).collect();
+        self.relayout();
+        self.scroll = self.scroll.min(self.max_scroll());
+        self.set_message("folded all (z opens one, Z opens all)");
+    }
+
+    /// `y`: copies the first code block on screen; `y` again soon after copies the next one.
+    fn yank(&mut self) {
+        let (top, bottom) = (self.scroll, self.scroll + self.view_height.max(1));
+        let visible: Vec<usize> =
+            (0..self.doc.code_blocks.len()).filter(|&i| self.doc.code_blocks[i].first < bottom && self.doc.code_blocks[i].last >= top).collect();
+        let Some(&first) = visible.first() else {
+            self.set_message("no code block on screen");
+            return;
+        };
+        let pick = match self.last_yank {
+            Some((prev, t)) if t.elapsed() < Duration::from_secs(3) => {
+                visible.iter().position(|&v| v == prev).map_or(first, |p| visible[(p + 1) % visible.len()])
+            }
+            _ => first,
+        };
+        self.last_yank = Some((pick, Instant::now()));
+        let c = &self.doc.code_blocks[pick];
+        let lines = c.text.lines().count();
+        let what = if c.lang.is_empty() { "code".to_string() } else { c.lang.clone() };
+        let start: String = c.text.lines().next().unwrap_or("").trim().chars().take(30).collect();
+        let more = if visible.len() > 1 { " · y: next block" } else { "" };
+        let msg = format!("copied {what} ({lines} lines): {start}{more}");
+        self.clipboard_request = Some(c.text.clone());
+        self.set_message(msg);
     }
 
     /// Heading index of the section shown at the top of the screen.
@@ -758,10 +867,10 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => self.toc_selected = 0,
             KeyCode::End | KeyCode::Char('G') => self.toc_selected = n.saturating_sub(1),
             KeyCode::Enter => {
-                if let Some(h) = self.doc.headings.get(self.toc_selected) {
-                    self.scroll = h.line.min(self.max_scroll());
-                }
                 self.mode = Mode::Normal;
+                if let Some(line) = self.doc.headings.get(self.toc_selected).map(|h| h.line) {
+                    self.jump_to_line(line);
+                }
             }
             _ => {}
         }
@@ -826,6 +935,9 @@ impl App {
             }
             KeyCode::Char('w') => self.toggle_watch(),
             KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('y') => self.yank(),
+            KeyCode::Char('z') => self.toggle_fold(),
+            KeyCode::Char('Z') => self.toggle_fold_all(),
             KeyCode::Char('e') => match self.path.clone() {
                 Some(p) => self.edit_request = Some((p, self.top_source_line())),
                 None => self.set_message("cannot edit stdin"),
@@ -873,6 +985,11 @@ impl App {
                         self.on_key(k);
                         if let Some((path, line)) = self.edit_request.take() {
                             self.run_editor(terminal, &path, line)?;
+                        }
+                        if let Some(text) = self.clipboard_request.take()
+                            && let Err(e) = clipboard::copy(&text)
+                        {
+                            self.set_message(format!("copy failed: {e}"));
                         }
                         dirty = true;
                     }

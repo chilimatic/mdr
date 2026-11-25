@@ -50,12 +50,24 @@ pub struct ImageBlock {
     pub rows: u16,
 }
 
+/// A fenced or indented code block (also a diagram), for copying.
+pub struct CodeBlock {
+    pub lang: String,
+    pub text: String,
+    /// Rendered lines `first..=last`.
+    pub first: usize,
+    pub last: usize,
+}
+
 #[derive(Default)]
 pub struct Doc {
     pub lines: Vec<Line>,
     pub headings: Vec<Heading>,
     pub links: Vec<Link>,
     pub images: Vec<ImageBlock>,
+    pub code_blocks: Vec<CodeBlock>,
+    /// Link targets that are not headings: `fn:label` for footnote definitions.
+    pub anchors: Vec<(String, usize)>,
     /// Width of the widest line. Can be more than the layout width (wide diagrams).
     pub width: usize,
 }
@@ -102,6 +114,67 @@ pub fn render(src: &str, ctx: Ctx<'_>) -> Doc {
     b.flush_inline();
     b.doc.width = b.doc.lines.iter().map(|l| l.plain.width()).max().unwrap_or(0);
     b.doc
+}
+
+/// Hides the content of the sections whose heading slug is in `folded`, and adds
+/// "▸ N lines folded" to those headings. Line numbers in `doc` are updated.
+pub fn fold(doc: &mut Doc, folded: &std::collections::HashSet<String>, mark: Style) {
+    if folded.is_empty() {
+        return;
+    }
+    let n = doc.lines.len();
+    let mut keep = vec![true; n];
+    let mut marks = Vec::new();
+    for (i, h) in doc.headings.iter().enumerate() {
+        if !keep[h.line] || !folded.contains(&h.slug) {
+            continue;
+        }
+        let src = doc.lines[h.line].src;
+        let start = (h.line + 1..n).find(|&l| doc.lines[l].src != src).unwrap_or(n);
+        let mut end = doc.headings[i + 1..].iter().find(|o| o.level <= h.level).map_or(n, |o| o.line);
+        // Keep the blank line before the next heading.
+        if end < n && end > start && doc.lines[end - 1].plain.trim().is_empty() {
+            end -= 1;
+        }
+        if end <= start {
+            continue;
+        }
+        keep[start..end].iter_mut().for_each(|k| *k = false);
+        marks.push((h.line, end - start));
+    }
+    for (line, count) in marks {
+        let text = format!("  ▸ {count} lines folded");
+        let l = &mut doc.lines[line];
+        l.plain.push_str(&text);
+        l.spans.push(Span::styled(text, mark));
+    }
+    // New index of each old line; a hidden line maps to the last line kept before it.
+    let mut map = vec![0usize; n];
+    let mut next = 0usize;
+    for i in 0..n {
+        map[i] = if keep[i] { next } else { next.saturating_sub(1) };
+        if keep[i] {
+            next += 1;
+        }
+    }
+    let mut i = 0;
+    doc.lines.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
+    doc.headings.retain(|h| keep[h.line]);
+    doc.headings.iter_mut().for_each(|h| h.line = map[h.line]);
+    doc.links.retain(|l| keep[l.line]);
+    doc.links.iter_mut().for_each(|l| l.line = map[l.line]);
+    doc.images.retain(|im| keep[im.line]);
+    doc.images.iter_mut().for_each(|im| im.line = map[im.line]);
+    doc.code_blocks.retain(|c| keep[c.first]);
+    doc.code_blocks.iter_mut().for_each(|c| {
+        c.first = map[c.first];
+        c.last = map[c.last];
+    });
+    doc.anchors.iter_mut().for_each(|a| a.1 = map[a.1.min(n.saturating_sub(1))]);
+    doc.width = doc.lines.iter().map(|l| l.plain.width()).max().unwrap_or(0);
 }
 
 /// GitHub-style heading anchor: lowercase, spaces become dashes, punctuation is dropped.
@@ -535,8 +608,11 @@ impl<'a> Builder<'a> {
                 }
             }
             Event::FootnoteReference(label) => {
+                // A link to the footnote; the footnote links back (see `fnref:`).
                 let style = self.theme().link;
-                self.segs.push(Seg::new(format!("[^{label}]"), style, None));
+                self.link_urls.push(format!("#fn:{label}"));
+                let link = Some(self.link_urls.len() - 1);
+                self.segs.push(Seg::new(format!("[^{label}]"), style, link));
             }
             Event::SoftBreak => self.push_text(" "),
             Event::HardBreak => {
@@ -576,10 +652,7 @@ impl<'a> Builder<'a> {
             Tag::Paragraph => {
                 self.src = offset;
                 self.begin_block();
-                if let Some(label) = self.footnote_label.take() {
-                    let style = self.theme().dim;
-                    self.segs.push(Seg::new(label, style, None));
-                }
+                self.push_footnote_label();
             }
             Tag::Heading { level, .. } => {
                 self.src = offset;
@@ -653,7 +726,8 @@ impl<'a> Builder<'a> {
             Tag::FootnoteDefinition(label) => {
                 self.src = offset;
                 self.begin_block();
-                self.footnote_label = Some(format!("[^{label}]: "));
+                self.doc.anchors.push((format!("fn:{label}"), self.doc.lines.len()));
+                self.footnote_label = Some(label.to_string());
             }
             Tag::Table(aligns) => {
                 self.src = offset;
@@ -728,10 +802,7 @@ impl<'a> Builder<'a> {
                 self.containers.pop();
             }
             TagEnd::FootnoteDefinition => {
-                if let Some(label) = self.footnote_label.take() {
-                    let style = self.theme().dim;
-                    self.segs.push(Seg::new(label, style, None));
-                }
+                self.push_footnote_label();
                 self.flush_inline();
                 self.need_blank = true;
             }
@@ -774,6 +845,17 @@ impl<'a> Builder<'a> {
     }
 
     // -- block emitters -----------------------------------------------------
+
+    /// The `[^label]: ` in front of a footnote, linking back to where it is used.
+    fn push_footnote_label(&mut self) {
+        if let Some(label) = self.footnote_label.take() {
+            self.link_urls.push(format!("#fnref:{label}"));
+            let link = Some(self.link_urls.len() - 1);
+            let style = self.theme().dim;
+            self.segs.push(Seg::new(format!("[^{label}]"), style, link));
+            self.segs.push(Seg::new(": ".to_string(), style, None));
+        }
+    }
 
     fn end_heading(&mut self, level: u8) {
         let segs = std::mem::take(&mut self.segs);
@@ -837,6 +919,15 @@ impl<'a> Builder<'a> {
     }
 
     fn emit_code(&mut self, lang: &str, body: &str) {
+        let first = self.doc.lines.len();
+        self.emit_code_rows(lang, body);
+        if self.doc.lines.len() > first {
+            let text = body.strip_suffix('\n').unwrap_or(body).to_string();
+            self.doc.code_blocks.push(CodeBlock { lang: lang.to_string(), text, first, last: self.doc.lines.len() - 1 });
+        }
+    }
+
+    fn emit_code_rows(&mut self, lang: &str, body: &str) {
         if crate::diagram::is_diagram(lang) {
             match crate::diagram::render(lang, body, self.avail(), self.ctx.theme) {
                 Ok(rows) => {
@@ -1016,6 +1107,55 @@ mod tests {
         let mut sizer = NoImages;
         let doc = render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true });
         doc.lines.into_iter().map(|l| l.plain.trim_end().to_string()).collect()
+    }
+
+    fn doc_of(md: &str, width: usize) -> Doc {
+        let theme = Theme::new(ThemeKind::Dark);
+        let hl = Highlighter::new();
+        let mut sizer = NoImages;
+        render(md, Ctx { width, theme: &theme, hl: &hl, base_dir: None, sizer: &mut sizer, interactive: true })
+    }
+
+    #[test]
+    fn footnotes_link_both_ways() {
+        let doc = doc_of("Text[^a] here.\n\n[^a]: The note.\n", 40);
+        let urls: Vec<&str> = doc.links.iter().map(|l| l.url.as_str()).collect();
+        assert_eq!(urls, ["#fn:a", "#fnref:a"]);
+        let (name, line) = &doc.anchors[0];
+        assert_eq!(name, "fn:a");
+        assert!(doc.lines[*line].plain.contains("The note."), "{:?}", doc.lines[*line].plain);
+        assert!(doc.lines[*line].plain.starts_with("[^a]: "));
+    }
+
+    #[test]
+    fn records_code_blocks() {
+        let doc = doc_of("Intro\n\n```rust\nfn main() {}\nlet x = 1;\n```\n\nOutro\n", 40);
+        assert_eq!(doc.code_blocks.len(), 1);
+        let c = &doc.code_blocks[0];
+        assert_eq!((c.lang.as_str(), c.text.as_str()), ("rust", "fn main() {}\nlet x = 1;"));
+        assert!(doc.lines[c.first + 1].plain.contains("fn main"));
+        assert!(doc.lines[c.last + 2].plain.contains("Outro"));
+    }
+
+    #[test]
+    fn folds_sections() {
+        let md = "# Top\n\nintro\n\n## A\n\na1\n\n### A.1\n\ndeep [link](x)\n\n## B\n\nb1\n";
+        let mut doc = doc_of(md, 40);
+        let folded: std::collections::HashSet<String> = ["a".to_string()].into();
+        fold(&mut doc, &folded, Style::default());
+        let text: Vec<&str> = doc.lines.iter().map(|l| l.plain.trim_end()).collect();
+        assert!(text.iter().any(|l| l.starts_with("A") && l.contains("▸ 5 lines folded")), "{text:#?}");
+        assert!(!text.iter().any(|l| l.contains("a1") || l.contains("deep")), "{text:#?}");
+        assert!(text.contains(&"b1"));
+        let titles: Vec<&str> = doc.headings.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, ["Top", "A", "B"]);
+        for h in &doc.headings {
+            assert!(doc.lines[h.line].plain.starts_with(&h.title), "{}", h.title);
+        }
+        assert!(doc.links.is_empty());
+        // A blank line stays before the next heading.
+        let b = doc.headings[2].line;
+        assert_eq!(text[b - 1], "");
     }
 
     #[test]
