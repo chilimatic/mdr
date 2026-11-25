@@ -3,9 +3,11 @@
 pub mod canvas;
 mod chart;
 mod dot;
+mod gantt;
 mod graph;
 mod mermaid;
 mod sequence;
+mod uml;
 
 use ratatui::style::{Modifier, Style};
 
@@ -186,5 +188,112 @@ mod tests {
         let out = draw("mermaid", "stateDiagram-v2\n[*] --> Idle\nIdle --> Busy : start\nBusy --> Idle : done\nBusy --> [*]", 60);
         fits(&out, 60);
         assert!(out.join("\n").contains("Idle"));
+    }
+
+    const CLASS_SRC: &str = "classDiagram\n\
+        class Animal {\n  <<abstract>>\n  +String name\n  +eat() void\n}\n\
+        class Duck~T~\n\
+        Animal <|-- Duck\n\
+        Animal : +int age\n\
+        Duck \"1\" *-- \"*\" Egg : lays\n\
+        Duck ..> Pond\n\
+        note for Duck \"quack\"";
+
+    #[test]
+    fn class_diagram() {
+        let out = draw("mermaid", CLASS_SRC, 100);
+        let text = out.join("\n");
+        for s in ["«abstract»", "Animal", "+String name", "+eat() void", "+int age", "Duck<T>", "inherits", "◆ composes", "lays", "1 → *", "depends on", "Pond", "Egg"] {
+            assert!(text.contains(s), "missing {s}:\n{text}");
+        }
+        assert!(!text.contains("quack"));
+        // Parent is above the child and the arrow points up to it.
+        let row = |s: &str| out.iter().position(|l| l.contains(s)).unwrap();
+        assert!(row("Animal") < row("Duck<T>"));
+        assert!(text.contains('▲'), "{text}");
+        assert!(text.contains('┄') || text.contains('┈') || text.contains('╌'), "dotted line expected:\n{text}");
+    }
+
+    #[test]
+    fn class_diagram_empty_is_an_error() {
+        let theme = Theme::new(ThemeKind::Dark);
+        assert!(render("mermaid", "classDiagram\ndirection LR", 80, &theme).is_err());
+    }
+
+    #[test]
+    fn er_diagram() {
+        let src = "erDiagram\n\
+            CUSTOMER ||--o{ ORDER : places\n\
+            ORDER ||--|{ \"LINE-ITEM\" : contains\n\
+            CUSTOMER }|..|{ DELIVERY_ADDRESS : uses\n\
+            CUSTOMER {\n  string name PK\n  string email UK \"login\"\n  int age\n}";
+        let out = draw("mermaid", src, 100);
+        let text = out.join("\n");
+        for s in ["CUSTOMER", "name: string PK", "email: string UK", "age: int", "places (1 to 0..n)", "contains (1 to 1..n)", "uses (1..n to 1..n)", "LINE-ITEM", "DELIVERY_ADDRESS"] {
+            assert!(text.contains(s), "missing {s}:\n{text}");
+        }
+        assert!(!text.contains("login"));
+        assert!(!text.contains('▼'), "no arrow heads:\n{text}");
+    }
+
+    const GANTT_SRC: &str = "gantt\n\
+        title Release plan\n\
+        dateFormat YYYY-MM-DD\n\
+        axisFormat %d.%m\n\
+        section Build\n\
+        Design :done, des, 2024-01-01, 2024-01-08\n\
+        Code :active, code, after des, 2w\n\
+        Review :crit, rev, after code, 48h\n\
+        section Ship\n\
+        Release :milestone, rel, after rev, 0d\n\
+        Docs : 3d";
+
+    #[test]
+    fn gantt_chart() {
+        let out = draw("mermaid", GANTT_SRC, 70);
+        fits(&out, 70);
+        let text = out.join("\n");
+        for s in ["Release plan", "Build", "Ship", "Design", "Code", "Review", "Release", "Docs", "◆", "2024-01-01", "2024-01-27"] {
+            assert!(text.contains(s), "missing {s}:\n{text}");
+        }
+        // after dependencies: Code starts where Design ends, Review where Code ends.
+        let bar = |name: &str| {
+            let l = out.iter().find(|l| l.starts_with(&format!("  {name} "))).unwrap();
+            let cells: Vec<char> = l.chars().skip_while(|&c| c != '│').skip(1).collect();
+            let first = cells.iter().position(|&c| c != ' ').unwrap();
+            let last = cells.iter().rposition(|&c| c != ' ').unwrap();
+            (first, last + 1)
+        };
+        let (design, code, review) = (bar("Design"), bar("Code"), bar("Review"));
+        assert!(design.1.abs_diff(code.0) <= 1, "{design:?} {code:?}");
+        assert!(code.1.abs_diff(review.0) <= 1, "{code:?} {review:?}");
+        // Code (2 weeks) is twice as long as Design (1 week); Review is 2 days.
+        assert!(code.1 - code.0 > design.1 - design.0);
+        assert!(review.1 - review.0 < design.1 - design.0);
+        // Docs follows the milestone without a start of its own.
+        assert!(bar("Docs").0 >= bar("Release").0);
+    }
+
+    #[test]
+    fn gantt_fits_any_reasonable_width() {
+        for w in [30, 40, 80, 120] {
+            fits(&draw("mermaid", GANTT_SRC, w), w);
+        }
+        let theme = Theme::new(ThemeKind::Dark);
+        assert!(render("mermaid", GANTT_SRC, 10, &theme).is_err());
+    }
+
+    #[test]
+    fn gantt_calendar_and_limits() {
+        let theme = Theme::new(ThemeKind::Dark);
+        // 2024 is a leap year: A ends Mar 1 (Feb 28 + 2 days), B (12h rounds up to 1 day) ends Mar 2.
+        let out = draw("mermaid", "gantt\nA : 2024-02-28, 2d\nB : 12h", 60);
+        assert!(out.join("\n").contains("2024-03-02"), "{out:#?}");
+        assert!(render("mermaid", "gantt\ndateFormat DD-MM-YYYY\nA : 01-01-2024, 2d", 60, &theme).is_err());
+        assert!(render("mermaid", "gantt\nA : 2024-02-30, 2d", 60, &theme).is_err());
+        assert!(render("mermaid", "gantt\nA : 2000-01-01, 2040-01-01", 60, &theme).is_err());
+        assert!(render("mermaid", "gantt\ntitle only", 60, &theme).is_err());
+        let many: String = std::iter::once("gantt".to_string()).chain((0..501).map(|i| format!("T{i} : 2024-01-01, 1d"))).collect::<Vec<_>>().join("\n");
+        assert!(render("mermaid", &many, 60, &theme).is_err());
     }
 }

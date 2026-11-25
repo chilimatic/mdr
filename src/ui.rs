@@ -563,7 +563,7 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let warnings: Vec<&str> = app.doc.lines.iter().map(|l| l.plain.as_str()).filter(|l| l.contains('⚠')).collect();
         assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert!(warnings[0].contains("gantt"));
+        assert!(warnings[0].contains("journey"));
         if std::env::var("MDR_DUMP").is_ok() {
             for l in &app.doc.lines {
                 println!("{}", l.plain.trim_end());

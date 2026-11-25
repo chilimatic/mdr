@@ -124,7 +124,7 @@ pub fn fmt_num(v: f64) -> String {
 
 /// Shortens `s` to at most `w` columns, measured on the whole string (emoji sequences
 /// can be wider than the sum of their chars). Zero-width chars are dropped.
-fn trunc(s: &str, w: usize) -> String {
+pub(super) fn trunc(s: &str, w: usize) -> String {
     let s: String = s.chars().filter(|c| c.width().unwrap_or(0) > 0).collect();
     if s.width() <= w {
         return s;
@@ -146,7 +146,7 @@ fn trunc(s: &str, w: usize) -> String {
     out
 }
 
-fn pad_right(s: &str, w: usize) -> String {
+pub(super) fn pad_right(s: &str, w: usize) -> String {
     format!("{s}{}", " ".repeat(w.saturating_sub(s.width())))
 }
 

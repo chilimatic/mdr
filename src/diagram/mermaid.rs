@@ -1,10 +1,10 @@
 //! Parser for a practical subset of Mermaid: flowchart/graph, stateDiagram,
-//! sequenceDiagram, pie and xychart.
+//! sequenceDiagram, classDiagram, erDiagram, gantt, pie and xychart.
 
 use super::canvas::Stroke;
 use super::chart::{self, Chart, Kind, Series};
 use super::graph::{self, Dir, Edge, Graph, Shape};
-use super::{Lines, Palette, sequence};
+use super::{Lines, Palette, gantt, sequence, uml};
 
 pub fn render(src: &str, width: usize, pal: &Palette) -> Result<Lines, String> {
     let mut lines: Vec<&str> = Vec::new();
@@ -33,6 +33,15 @@ pub fn render(src: &str, width: usize, pal: &Palette) -> Result<Lines, String> {
             let g = parse_state(body)?;
             graph::render(&g, super::MAX_DIAGRAM_WIDTH, pal).map(|c| c.lines())
         }
+        "classDiagram" | "classDiagram-v2" => {
+            let g = uml::parse_class(body)?;
+            graph::render(&g, super::MAX_DIAGRAM_WIDTH, pal).map(|c| c.lines())
+        }
+        "erDiagram" => {
+            let g = uml::parse_er(body)?;
+            graph::render(&g, super::MAX_DIAGRAM_WIDTH, pal).map(|c| c.lines())
+        }
+        "gantt" => gantt::render(&gantt::parse(body)?, width, pal),
         "sequenceDiagram" => sequence::render(&sequence::parse(body)?, super::MAX_DIAGRAM_WIDTH, pal),
         "pie" => chart::render(&parse_pie(header, body)?, width, pal),
         "xychart-beta" | "xychart" => chart::render(&parse_xychart(header, body)?, width, pal),

@@ -223,7 +223,7 @@ mdr draws these fenced code blocks as text art instead of code:
 
 | Block | Supported |
 |---|---|
-| ` ```mermaid ` | `graph` / `flowchart` (directions `TD`, `TB`, `BT`, `LR`, `RL`), `stateDiagram`, `sequenceDiagram`, `pie`, `xychart-beta` |
+| ` ```mermaid ` | `graph` / `flowchart` (directions `TD`, `TB`, `BT`, `LR`, `RL`), `stateDiagram`, `sequenceDiagram`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `xychart-beta` |
 | ` ```dot ` / ` ```graphviz ` | `digraph` and `graph`, `rankdir`, labels, node shapes, `style=dashed\|dotted\|bold`, `dir`, subgraphs |
 | ` ```chart ` | Bar, column and line charts (format below) |
 
@@ -231,8 +231,18 @@ Flowcharts support node shapes, edge labels (`-->|yes|` and `-- yes -->`), dotte
 (`-.->`) and thick (`==>`) edges, chains (`A --> B --> C`) and groups (`A & B --> C`).
 Sequence diagrams support `participant` / `actor` with `as`, solid and dashed arrows,
 messages to self, `autonumber`, notes, and `loop` / `alt` / `opt` / `par` sections.
+Class diagrams draw each class as a box with its members. They support generics
+(`List~T~`), `<<annotations>>`, cardinalities and the usual relations. A relation that is
+not a plain arrow gets its name on the line (`inherits`, `◆ composes`, `◇ aggregates`).
+ER diagrams draw entities with their attributes (`name: type PK`) and label each
+relationship with its cardinality, for example `places (1 to 0..n)`. Dotted lines are
+non-identifying relationships. Attribute comments are not shown.
+Gantt charts draw one bar per task on a day scale that fits the window. They support
+`title`, `section`, the tags `done`, `active`, `crit` and `milestone`, dates, `after id`
+and durations (`3d`, `2w`, `12h`). Only `dateFormat YYYY-MM-DD` works. `axisFormat`,
+`excludes` and `todayMarker` are ignored.
 
-A graph or sequence diagram that is wider than the window is still drawn. A line above it
+A graph, class, ER or sequence diagram that is wider than the window is still drawn. A line above it
 says so, and you scroll sideways with `h` and `l`. The status bar then shows the current
 column. Search and link selection also scroll sideways to show the match or link. Charts
 always fit the window, and wide tables wrap the text in their cells.
@@ -241,7 +251,7 @@ If mdr cannot draw a diagram, it shows a warning line and then the source as a n
 code block. This happens when:
 
 - the diagram is wider than 400 columns,
-- the Mermaid diagram type is not supported (for example `gantt`, `classDiagram`, `erDiagram`),
+- the Mermaid diagram type is not supported (for example `journey`, `mindmap`, `gitGraph`),
 - the source has a syntax error,
 - the diagram is very large (more than 300 nodes, 1000 edges or 1000 messages).
 

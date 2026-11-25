@@ -93,9 +93,50 @@ xychart-beta
     bar [30, 45, 60, 52]
 ```
 
-## Unsupported
+## Class diagram
+
+```mermaid
+classDiagram
+    class Animal {
+        <<abstract>>
+        +String name
+        +eat() void
+    }
+    class Duck~T~
+    Animal <|-- Duck
+    Duck "1" *-- "*" Egg : lays
+    Duck ..> Pond
+```
+
+## ER diagram
+
+```mermaid
+erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE_ITEM : contains
+    CUSTOMER {
+        string name PK
+        string email UK
+    }
+```
+
+## Gantt chart
 
 ```mermaid
 gantt
+    title Release plan
+    dateFormat YYYY-MM-DD
+    section Build
+    Design   :done, des, 2024-01-01, 2024-01-08
+    Code     :active, code, after des, 2w
+    Review   :crit, rev, after code, 2d
+    section Ship
+    Release  :milestone, after rev, 0d
+```
+
+## Unsupported
+
+```mermaid
+journey
     title Not drawn
 ```

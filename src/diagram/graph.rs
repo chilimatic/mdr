@@ -50,12 +50,14 @@ pub struct Graph {
     pub dir: Dir,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// Keep the label lines as given (no trimming), for boxes that carry aligned text.
+    pub raw_labels: bool,
     index: HashMap<String, usize>,
 }
 
 impl Graph {
     pub fn new(dir: Dir) -> Self {
-        Graph { dir, nodes: Vec::new(), edges: Vec::new(), index: HashMap::new() }
+        Graph { dir, nodes: Vec::new(), edges: Vec::new(), raw_labels: false, index: HashMap::new() }
     }
 
     /// Returns the node with this id. Creates it, labelled with its id, if it does not exist.
@@ -186,7 +188,7 @@ pub fn render(g: &Graph, max_width: usize, pal: &Palette) -> Result<Canvas, Stri
         .iter()
         .enumerate()
         .map(|(i, node)| {
-            let lines: Vec<String> = node.label.lines().map(|l| l.trim().to_string()).collect();
+            let lines: Vec<String> = node.label.lines().map(|l| if g.raw_labels { l.to_string() } else { l.trim().to_string() }).collect();
             let lines = if lines.is_empty() { vec![String::new()] } else { lines };
             let w = lines.iter().map(|l| l.width()).max().unwrap_or(0) + 4;
             let h = lines.len() + 2;
@@ -243,15 +245,26 @@ pub fn render(g: &Graph, max_width: usize, pal: &Palette) -> Result<Canvas, Stri
     }
 
     // 5. Positions across the layer axis: pull nodes toward their neighbors' centers.
+    // In a top-down layout an edge label is centered above the lower end of the edge's first
+    // segment; that node gets a footprint as wide as the label, so the label cannot cover
+    // the lines of its neighbors.
+    let mut foot: Vec<i64> = vn.iter().map(|v| v.cross as i64).collect();
+    if vertical {
+        for s in segs.iter().filter(|s| s.first) {
+            if let Some(lb) = &g.edges[s.edge].label {
+                foot[s.lower] = foot[s.lower].max(lb.width() as i64 + 2);
+            }
+        }
+    }
     let mut pos = vec![0i64; vn.len()];
     for l in &layers {
         let mut x = 0;
         for &v in l {
             pos[v] = x;
-            x += vn[v].cross as i64 + NODE_GAP;
+            x += foot[v] + NODE_GAP;
         }
     }
-    let center = |pos: &[i64], v: usize| pos[v] + vn[v].cross as i64 / 2;
+    let center = |pos: &[i64], v: usize| pos[v] + foot[v] / 2;
     let place = |pos: &mut Vec<i64>, l: usize, nbrs: &[Vec<usize>]| {
         let mut prev_end = i64::MIN / 2;
         for &v in &layers[l] {
@@ -259,11 +272,11 @@ pub fn render(g: &Graph, max_width: usize, pal: &Palette) -> Result<Canvas, Stri
                 pos[v]
             } else {
                 let avg = nbrs[v].iter().map(|&u| center(pos, u)).sum::<i64>() / nbrs[v].len() as i64;
-                avg - vn[v].cross as i64 / 2
+                avg - foot[v] / 2
             };
             let gap = if vn[v].real.is_none() { 1 } else { NODE_GAP };
             pos[v] = want.max(prev_end + gap);
-            prev_end = pos[v] + vn[v].cross as i64;
+            prev_end = pos[v] + foot[v];
         }
     };
     for _ in 0..4 {
@@ -274,9 +287,10 @@ pub fn render(g: &Graph, max_width: usize, pal: &Palette) -> Result<Canvas, Stri
             place(&mut pos, l, &downs);
         }
     }
+    // Footprints start at column 0; the node sits in the middle of its footprint.
     let min = pos.iter().copied().min().unwrap_or(0);
-    for p in &mut pos {
-        *p -= min;
+    for v in 0..vn.len() {
+        pos[v] += (foot[v] - vn[v].cross as i64) / 2 - min;
     }
     let cross_total = (0..vn.len()).map(|v| pos[v] as usize + vn[v].cross).max().unwrap_or(1);
 
@@ -305,7 +319,8 @@ pub fn render(g: &Graph, max_width: usize, pal: &Palette) -> Result<Canvas, Stri
             let off = if vn[v].cross >= 5 { vn[v].cross - 2 } else { vn[v].cross - 1 };
             pos[v] + off as i64
         } else {
-            center(&pos, v)
+            // The middle of the node (after the shift into its footprint).
+            pos[v] + vn[v].cross as i64 / 2
         }
     };
     let ends_x: Vec<(i64, i64)> = segs
