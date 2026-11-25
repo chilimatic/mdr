@@ -495,8 +495,11 @@ impl<'a> Builder<'a> {
         let mut out = Vec::new();
         for (i, c) in self.containers.iter_mut().enumerate() {
             if i >= shown {
-                // Not drawn; a pending marker is used up all the same.
-                if let Container::Item { pending, .. } = c {
+                // Not indented further, but a new item still shows its marker.
+                if let Container::Item { marker, marker_style, pending, .. } = c
+                    && *pending
+                {
+                    out.push(Span::styled(format!("{marker} "), *marker_style));
                     *pending = false;
                 }
                 continue;
@@ -1342,7 +1345,10 @@ mod tests {
         assert!(doc.width <= 60, "width {}", doc.width);
         assert!(doc.lines.iter().all(|l| l.spans.iter().filter(|s| s.content.starts_with('│')).count() <= MAX_NEST));
         let md = format!("{}- deep item\n", (0..200).map(|i| format!("{}- l{i}\n", "  ".repeat(i))).collect::<String>());
-        assert!(doc_of(&md, 60).width <= 60);
+        let doc = doc_of(&md, 60);
+        assert!(doc.width <= 64, "width {}", doc.width);
+        let deep = doc.lines.iter().find(|l| l.plain.contains("l150")).unwrap();
+        assert!(deep.plain.trim_start().starts_with(['•', '◦', '▪']), "{:?}", deep.plain);
     }
 
     #[test]
