@@ -52,9 +52,9 @@ Run the same command again to update. To remove: `cargo uninstall mdr` (add the 
 mdr prints them itself. For example:
 
 ```sh
-mdr --completions bash > ~/.local/share/bash-completion/completions/mdr
-mdr --completions zsh > ~/.zfunc/_mdr    # ~/.zfunc must be in $fpath
-mdr --completions fish > ~/.config/fish/completions/mdr.fish
+mkdir -p ~/.local/share/bash-completion/completions && mdr --completions bash > ~/.local/share/bash-completion/completions/mdr
+mkdir -p ~/.zfunc && mdr --completions zsh > ~/.zfunc/_mdr    # ~/.zfunc must be in $fpath
+mkdir -p ~/.config/fish/completions && mdr --completions fish > ~/.config/fish/completions/mdr.fish
 mkdir -p ~/.local/share/man/man1 && mdr --man > ~/.local/share/man/man1/mdr.1
 ```
 
