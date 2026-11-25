@@ -116,6 +116,9 @@ mdr --print notes.md                   # print to the terminal, with colors
 
 ## Keys
 
+The bottom row shows the keys that work at the moment, for example `n`/`N` while a search is
+active or `⏎ open link` while a link is selected. `?` shows all keys.
+
 | Key | Action |
 |---|---|
 | `j` `k` / `↓` `↑` | Scroll one line |

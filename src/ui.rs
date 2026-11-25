@@ -12,8 +12,10 @@ use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let [body, status, keys] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     app.on_resize(area.width, body.height);
+    draw_keys(f, app, keys);
 
     if app.mode == Mode::Picker {
         draw_picker(f, app, body, status);
@@ -30,6 +32,102 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Help => draw_help(f, app, body),
         _ => {}
     }
+}
+
+/// The keys that do something right now, as (key, action).
+fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut k = Vec::new();
+    match app.mode {
+        Mode::SearchInput => k.extend([("⏎", "done"), ("Esc", "cancel")]),
+        Mode::Toc => k.extend([("j/k", "move"), ("⏎", "jump"), ("Esc", "close")]),
+        Mode::Help => k.push(("any key", "close")),
+        Mode::Picker => match app.picker.as_ref() {
+            Some(pk) => match &pk.grep {
+                Some(g) if g.editing => k.extend([("⏎", "search"), ("Esc", "cancel")]),
+                Some(g) => {
+                    if !g.hits.is_empty() {
+                        k.extend([("j/k", "move"), ("⏎", "open")]);
+                    }
+                    k.extend([("s", "new search"), ("Esc", "file list"), ("q", "quit")]);
+                }
+                None if pk.filtering => k.extend([("⏎", "keep filter"), ("Esc", "clear filter")]),
+                None => {
+                    if !pk.visible().is_empty() {
+                        k.extend([("j/k", "move"), ("⏎", "open")]);
+                    }
+                    k.extend([("/", "filter names"), ("s", "search text")]);
+                    if !pk.filter.is_empty() {
+                        k.push(("Esc", "clear filter"));
+                    }
+                    k.push(("q", "quit"));
+                }
+            },
+            None => k.push(("q", "quit")),
+        },
+        Mode::Normal => {
+            let searching = app.search.as_ref().is_some_and(|s| !s.matches.is_empty());
+            if app.link_selected.is_some() {
+                k.extend([("⏎", "open link"), ("Tab", "next link"), ("Esc", "clear")]);
+            } else if searching {
+                k.extend([("n/N", "match"), ("Esc", "clear")]);
+            }
+            if app.max_scroll() > 0 {
+                k.push(("j/k", "scroll"));
+            }
+            if app.max_hscroll() > 0 {
+                k.push(("h/l", "sideways"));
+            }
+            k.push(("/", "search"));
+            if !app.doc.headings.is_empty() {
+                k.push(("t", "contents"));
+            }
+            if !app.doc.links.is_empty() && app.link_selected.is_none() {
+                k.push(("Tab", "links"));
+            }
+            if !app.history.is_empty() || app.picker.is_some() {
+                k.push(("⌫", if app.history.is_empty() { "file list" } else { "back" }));
+            }
+            if app.path.is_some() {
+                k.push(("e", "edit"));
+            }
+            // Least important: left out first when the row is full.
+            if app.max_scroll() > 0 {
+                k.push(("Space/b", "page"));
+            }
+            k.extend([("?", "all keys"), ("q", "quit")]);
+        }
+    }
+    k
+}
+
+/// One row with the keys that work now, most important first. Hints that do not fit
+/// are left out, but `? all keys` and `q quit` are always shown.
+fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let hints = key_hints(app);
+    let piece = |(key, what): (&str, &str)| -> [Span<'static>; 2] {
+        [Span::styled(format!(" {key} "), theme.list_marker.add_modifier(Modifier::BOLD)), Span::styled(format!("{what}  "), theme.dim)]
+    };
+    let width = |p: &[Span]| p.iter().map(|s| s.width()).sum::<usize>();
+    let tail = hints.iter().rev().take_while(|(k, _)| matches!(*k, "?" | "q")).count();
+    let (head, end) = hints.split_at(hints.len() - tail);
+    let mut end: Vec<Span> = end.iter().flat_map(|&h| piece(h)).collect();
+    if width(&end) > area.width as usize {
+        // Very narrow: only the keys.
+        end = hints[hints.len() - tail..].iter().map(|(k, _)| Span::styled(format!(" {k} "), theme.list_marker)).collect();
+    }
+    let mut room = (area.width as usize).saturating_sub(width(&end));
+    let mut spans = Vec::new();
+    for &h in head {
+        let p = piece(h);
+        if width(&p) > room {
+            break;
+        }
+        room -= width(&p);
+        spans.extend(p);
+    }
+    spans.extend(end);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Re-styles the char ranges `[start, end)` of a line, splitting spans where needed.
@@ -219,7 +317,6 @@ fn draw_picker(f: &mut Frame, app: &App, body: Rect, status: Rect) {
         Line::from(vec![
             Span::styled(" files ", theme.status_accent),
             Span::styled(format!(" {} of {}{filter}", visible.len(), pk.files.len()), theme.status),
-            Span::styled("   ⏎ open · / filter names · s search text · q quit", theme.status),
         ])
     };
     let line = match &app.message {
@@ -266,7 +363,6 @@ fn draw_grep(f: &mut Frame, app: &App, pk: &crate::picker::Picker, g: &crate::gr
         Line::from(vec![
             Span::styled(" search ", theme.status_accent),
             Span::styled(format!(" {}█", g.query), theme.status),
-            Span::styled("   ⏎ search · esc cancel", theme.status),
         ])
     } else {
         let more = if g.truncated { " (stopped at the first matches)" } else { "" };
@@ -276,7 +372,6 @@ fn draw_grep(f: &mut Frame, app: &App, pk: &crate::picker::Picker, g: &crate::gr
                 format!(" {}  {} lines in {} files{more}", g.query, g.hits.len(), g.files_hit()),
                 theme.status,
             ),
-            Span::styled("   ⏎ open · s new search · esc file list", theme.status),
         ])
     };
     f.render_widget(Paragraph::new(line).style(theme.status), status);
@@ -367,6 +462,15 @@ mod tests {
             .collect()
     }
 
+    /// The status bar: the row above the key bar.
+    fn status(s: &[String]) -> String {
+        s[s.len() - 2].clone()
+    }
+
+    fn keys(s: &[String]) -> String {
+        s[s.len() - 1].clone()
+    }
+
     fn app_for(path: &str) -> App {
         let text = std::fs::read_to_string(path).unwrap();
         let picker = ratatui_image::picker::Picker::halfblocks();
@@ -401,7 +505,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         let s = draw(&mut app, "search bananas");
         assert!(s.iter().any(|l| l.contains("bananas")));
-        assert!(s.last().unwrap().contains("/bananas  1/1"));
+        assert!(status(&s).contains("/bananas  1/1"));
 
         // Table of contents.
         key(&mut app, KeyCode::Esc);
@@ -422,13 +526,13 @@ mod tests {
         draw(&mut app, "image");
         key(&mut app, KeyCode::Char('T'));
         let s = draw(&mut app, "light theme");
-        assert!(s.last().unwrap().contains("light"));
+        assert!(status(&s).contains("light"));
 
         // Width change relayouts.
         key(&mut app, KeyCode::Char('-'));
         key(&mut app, KeyCode::Char('-'));
         let s = draw(&mut app, "narrower");
-        assert!(s.last().unwrap().contains("width: 60"), "{:?}", s.last());
+        assert!(status(&s).contains("width: 60"), "{:?}", status(&s));
 
         // Help popup.
         key(&mut app, KeyCode::Char('?'));
@@ -461,7 +565,7 @@ mod tests {
         let s = screen(&term);
         assert!(s.iter().any(|l| l.contains("scroll with h / l")), "{s:#?}");
         assert!(s.iter().any(|l| l.contains("long node label 1")));
-        assert!(s.last().unwrap().contains("⇆ col 1"));
+        assert!(status(&s).contains("⇆ col 1"));
         assert!(app.max_hscroll() > 0);
 
         for _ in 0..20 {
@@ -495,7 +599,7 @@ mod tests {
         key(&mut app, KeyCode::Char('l'));
         assert_eq!(app.hscroll, 0);
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(!screen(&term).last().unwrap().contains('⇆'));
+        assert!(!status(&screen(&term)).contains('⇆'));
     }
 
     #[test]
@@ -507,7 +611,7 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = screen(&term);
         assert!(s.iter().any(|l| l.contains("▶ diagrams.md")), "{s:#?}");
-        assert!(s.last().unwrap().contains("3 of 3"));
+        assert!(status(&s).contains("3 of 3"));
 
         // Filter to one file and open it.
         key(&mut app, KeyCode::Char('/'));
@@ -516,7 +620,7 @@ mod tests {
         }
         key(&mut app, KeyCode::Enter);
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(screen(&term).last().unwrap().contains("1 of 3"));
+        assert!(status(&screen(&term)).contains("1 of 3"));
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.file_name(), "other.md");
@@ -553,7 +657,7 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = screen(&term);
         assert!(s.iter().any(|l| l.contains("▶ kitchen-sink.md:") && l.contains("bananas")), "{s:#?}");
-        assert!(s.last().unwrap().contains("1 lines in 1 files"), "{s:#?}");
+        assert!(status(&s).contains("1 lines in 1 files"), "{s:#?}");
 
         // Enter opens the file with the match selected and visible.
         key(&mut app, KeyCode::Enter);
@@ -562,7 +666,7 @@ mod tests {
         let m = app.search.as_ref().map(|s| s.matches[s.current]).expect("search set");
         assert!(m.line >= app.scroll && m.line < app.scroll + app.view_height);
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(screen(&term).last().unwrap().contains("/bananas  1/1"));
+        assert!(status(&screen(&term)).contains("/bananas  1/1"));
 
         // Backspace returns to the results.
         key(&mut app, KeyCode::Backspace);
@@ -575,13 +679,13 @@ mod tests {
         type_text(&mut app, "xyz");
         key(&mut app, KeyCode::Esc);
         term.draw(|f| draw(f, &mut app)).unwrap();
-        assert!(screen(&term).last().unwrap().contains("bananas  1 lines"), "{:?}", screen(&term).last());
+        assert!(status(&screen(&term)).contains("bananas  1 lines"), "{:?}", status(&screen(&term)));
 
         // Esc goes to the file list, with the file selected.
         key(&mut app, KeyCode::Esc);
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = screen(&term);
-        assert!(s.last().unwrap().contains("3 of 3"));
+        assert!(status(&s).contains("3 of 3"));
         assert!(s.iter().any(|l| l.contains("▶ kitchen-sink.md")), "{s:#?}");
 
         // No matches.
@@ -679,6 +783,40 @@ mod tests {
         let mut stdin = App::new(None, "x".into(), ThemeKind::Dark, None, Images::new(None));
         key(&mut stdin, KeyCode::Char('e'));
         assert!(stdin.edit_request.is_none());
+    }
+
+    #[test]
+    fn key_bar_shows_the_keys_that_work_now() {
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        let mut bar = |app: &mut App| {
+            term.draw(|f| draw(f, app)).unwrap();
+            keys(&screen(&term))
+        };
+        let b = bar(&mut app);
+        for k in ["j/k scroll", "/ search", "t contents", "Tab links", "e edit", "? all keys", "q quit"] {
+            assert!(b.contains(k), "missing {k}: {b}");
+        }
+        assert!(!b.contains("h/l") && !b.contains("n/N") && !b.contains("⌫"), "{b}");
+
+        key(&mut app, KeyCode::Tab);
+        assert!(bar(&mut app).contains("⏎ open link"));
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('/'));
+        let b = bar(&mut app);
+        assert!(b.contains("⏎ done") && b.contains("Esc cancel") && !b.contains("q quit"), "{b}");
+        type_text(&mut app, "bananas");
+        key(&mut app, KeyCode::Enter);
+        assert!(bar(&mut app).contains("n/N match"));
+        key(&mut app, KeyCode::Char('t'));
+        assert!(bar(&mut app).contains("⏎ jump"));
+
+        // Narrow window: hints are dropped, "? all keys" and "q quit" stay.
+        let mut app = app_for("tests/fixtures/kitchen-sink.md");
+        let mut term = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let b = keys(&screen(&term));
+        assert!(b.contains("? all keys") && b.contains("q quit"), "{b}");
     }
 
     #[test]

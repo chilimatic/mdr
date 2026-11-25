@@ -848,7 +848,8 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let size = terminal.size().context("cannot read terminal size")?;
-        self.on_resize(size.width, size.height.saturating_sub(1));
+        // The status bar and the key bar take two rows.
+        self.on_resize(size.width, size.height.saturating_sub(2));
         self.resume_position();
         let mut dirty = true;
         while !self.quit {
