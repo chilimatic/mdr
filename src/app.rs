@@ -306,6 +306,15 @@ impl App {
         self.hscroll = self.hscroll.min(self.max_hscroll());
     }
 
+    /// Reloads only when the text on disk differs (saves without changes, watch events).
+    fn reload_if_changed(&mut self) {
+        let Some(path) = &self.path else { return };
+        if text::read_file(path).is_ok_and(|l| l.text == self.text) {
+            return;
+        }
+        self.reload();
+    }
+
     /// Reads the file again. Keeps the reader at the same heading if it still exists.
     pub fn reload(&mut self) {
         let Some(path) = self.path.clone() else { return };
@@ -1096,7 +1105,11 @@ impl App {
                 terminal.draw(|f| ui::draw(f, self))?;
                 dirty = false;
             }
-            if event::poll(Duration::from_millis(100))? {
+            // Handle every waiting event before the next draw: a window resize sends many
+            // events, and each draw may lay out the whole document again.
+            let mut wait = Duration::from_millis(100);
+            while !self.quit && event::poll(wait)? {
+                wait = Duration::ZERO;
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => {
                         self.on_key(k);
@@ -1122,7 +1135,7 @@ impl App {
             let changed = self.watcher.as_ref().is_some_and(|w| w.rx.try_iter().count() > 0);
             let ignored = self.ignore_changes_until.is_some_and(|t| Instant::now() < t);
             if changed && !ignored {
-                self.reload();
+                self.reload_if_changed();
                 dirty = true;
             }
         }
@@ -1157,7 +1170,7 @@ impl App {
         // The watcher reports the edits up to its debounce delay later; the reload below covers them.
         self.ignore_changes_until = Some(Instant::now() + Duration::from_millis(500));
         match status {
-            Ok(s) if s.success() => self.reload(),
+            Ok(s) if s.success() => self.reload_if_changed(),
             // 127: the shell did not find the editor.
             Ok(s) if s.code() == Some(127) => self.set_message(format!("cannot start {program} (set $EDITOR)")),
             Ok(s) => {

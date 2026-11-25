@@ -6,6 +6,7 @@ use crate::grep::Grep;
 
 const MAX_DEPTH: usize = 8;
 const MAX_FILES: usize = 5000;
+const MAX_DIRS: usize = 20_000;
 const SKIP_DIRS: [&str; 2] = ["target", "node_modules"];
 
 pub struct Picker {
@@ -30,7 +31,13 @@ impl Picker {
     pub fn scan(root: &Path) -> std::io::Result<Self> {
         let mut files = Vec::new();
         let mut stack = vec![(root.to_path_buf(), 0usize)];
+        let mut dirs = 0;
         while let Some((dir, depth)) = stack.pop() {
+            // Stop at the file limit, and do not walk a whole home folder looking for files.
+            dirs += 1;
+            if files.len() >= MAX_FILES || dirs > MAX_DIRS {
+                break;
+            }
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
                 // The root must be readable; unreadable subfolders are skipped.

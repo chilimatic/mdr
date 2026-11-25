@@ -125,7 +125,7 @@ An unknown setting or a wrong value is an error, and mdr names the line.
 
 `mdr docs/` shows a list of the markdown files (`.md`, `.markdown`) in the folder and its
 subfolders. Hidden folders, `target/` and `node_modules/` are skipped. The search goes at
-most 8 levels deep and lists at most 5000 files.
+most 8 levels deep, looks into at most 20,000 folders and lists at most 5000 files.
 
 | Key | Action |
 |---|---|
